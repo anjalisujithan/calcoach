@@ -1,3 +1,9 @@
+---
+noteId: "fb719d11218511f1b6c7adf354e427f5"
+tags: []
+
+---
+
 # Calendar Backend
 
 FastAPI backend that handles Google Calendar OAuth and exposes calendar data.

@@ -1,3 +1,9 @@
+---
+noteId: "fb719d10218511f1b6c7adf354e427f5"
+tags: []
+
+---
+
 # CalCoach — Analytics Module
 
 **Built during:** March 2026 session
