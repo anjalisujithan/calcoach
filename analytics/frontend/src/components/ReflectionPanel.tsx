@@ -12,12 +12,14 @@ export interface ReflectionEntry {
   productivity: number; // 1–5
   reflectionText: string;
   savedAt: string;    // ISO timestamp
+  category?: string;
 }
 
 interface Props {
   selectedSession: Session | null;
   reflections: ReflectionEntry[];
   onSave: (entry: Omit<ReflectionEntry, 'id' | 'savedAt'>) => void;
+  onClose?: () => void;
 }
 
 const FACES: { score: number; emoji: string; label: string }[] = [
@@ -43,7 +45,7 @@ function fmtDisplay(hour: number, min: number) {
   return `${h}:${String(min).padStart(2, '0')} ${suffix}`;
 }
 
-export default function ReflectionPanel({ selectedSession, reflections, onSave }: Props) {
+export default function ReflectionPanel({ selectedSession, reflections, onSave, onClose }: Props) {
   const [productivity, setProductivity] = useState<number | null>(null);
   const [text, setText] = useState('');
   const [saved, setSaved] = useState(false);
@@ -71,6 +73,7 @@ export default function ReflectionPanel({ selectedSession, reflections, onSave }
       endTime: addMinutes(selectedSession.startHour, selectedSession.startMin, selectedSession.durationMins),
       productivity,
       reflectionText: text.trim(),
+      category: selectedSession.category,
     });
     setSaved(true);
     setText('');
@@ -80,10 +83,15 @@ export default function ReflectionPanel({ selectedSession, reflections, onSave }
   return (
     <div className="reflection-panel">
       {/* Header */}
-      <div className="reflection-panel-header">
-        Reflect on work session
-        {selectedSession && (
-          <span className="rp-session-label"> — {selectedSession.title}</span>
+      <div className="reflection-panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span>
+          Reflect on work session
+          {selectedSession && (
+            <span className="rp-session-label"> — {selectedSession.title}</span>
+          )}
+        </span>
+        {onClose && (
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.1rem', color: '#666', lineHeight: 1 }}>✕</button>
         )}
       </div>
 

@@ -10,7 +10,7 @@ type Tab = 'calendar' | 'diary' | 'analytics';
 let idCounter = 0;
 const mkId = () => String(++idCounter);
 
-const API = 'http://localhost:8000';
+const API = 'http://localhost:8001';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('calendar');
@@ -53,7 +53,7 @@ export default function App() {
         </nav>
       </header>
       <main className="app-main">
-        {activeTab === 'calendar' && <CalendarTab />}
+        {activeTab === 'calendar' && <CalendarTab reflections={reflections} onSaveReflection={handleSaveReflection} />}
         {activeTab === 'diary' && (
           <DiaryTab reflections={reflections} onSaveReflection={handleSaveReflection} />
         )}
