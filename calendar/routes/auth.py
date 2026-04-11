@@ -58,7 +58,7 @@ def callback(request: Request, code: str, state: str):
         "scopes": list(creds.scopes or SCOPES),
     }
 
-    return {"message": "Authenticated successfully", "has_refresh_token": bool(creds.refresh_token)}
+    return RedirectResponse("http://localhost:3000")
 
 
 @router.get("/status")

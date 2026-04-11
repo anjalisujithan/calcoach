@@ -245,11 +245,14 @@ body {
   cursor: pointer;
   overflow: hidden;
   z-index: 1;
-  transition: opacity 0.15s;
+  transition: opacity 0.15s, box-shadow 0.15s;
+  border-top: 2px solid rgba(255, 255, 255, 0.35);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.22);
 }
 
 .session-block:hover {
-  opacity: 0.85;
+  opacity: 0.88;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.28);
 }
 
 .session-block.selected {
@@ -544,14 +547,15 @@ body {
 /* ── Color palette in modal ── */
 .color-palette {
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 6px;
+  flex-wrap: nowrap;
   margin-top: 2px;
 }
 
 .color-swatch {
-  width: 26px;
-  height: 26px;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
   border-radius: 50%;
   border: 2px solid transparent;
   cursor: pointer;
