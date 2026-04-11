@@ -1,16 +1,18 @@
-import { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { format, startOfWeek, addDays, isSameDay, addWeeks, subWeeks } from 'date-fns';
 
 export interface Session {
   id: string;
   title: string;
   description: string;
-  date: string;       // 'yyyy-MM-dd'
-  dayIndex: number;   // 0=Sun … 6=Sat
+  date: string;           // 'yyyy-MM-dd'
+  dayIndex: number;       // 0=Sun … 6=Sat
   startHour: number;
   startMin: number;
   durationMins: number;
   color: string;
+  recurrence?: string[];  // RRULE strings e.g. ["RRULE:FREQ=WEEKLY;BYDAY=MO"]
+  category?: string;
 }
 
 interface Props {
@@ -18,6 +20,11 @@ interface Props {
   selectedSession?: string | null;
   onSelectSession?: (id: string) => void;
   onAddSession?: (s: Omit<Session, 'id'>) => void;
+  onEditSession?: (id: string, s: Omit<Session, 'id'>) => void;
+  categories?: string[];
+  onAddCategory?: (cat: string) => void;
+  onDeleteCategory?: (cat: string) => void;
+  toolbarExtra?: React.ReactNode;
 }
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
@@ -28,14 +35,28 @@ const COLOR_PALETTE = [
   '#607d8b', '#795548',
 ];
 
+const RRULE_DAY = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+
+function buildRRule(repeat: string, customDays: number[], dayIdx: number): string[] {
+  if (repeat === 'daily') return ['RRULE:FREQ=DAILY'];
+  if (repeat === 'weekly') return [`RRULE:FREQ=WEEKLY;BYDAY=${RRULE_DAY[dayIdx]}`];
+  if (repeat === 'custom' && customDays.length > 0)
+    return [`RRULE:FREQ=WEEKLY;BYDAY=${customDays.map(d => RRULE_DAY[d]).join(',')}`];
+  return [];
+}
+
 const DEFAULT_FORM = {
   title: '',
   description: '',
   day: '1',
   startTime: '09:00',
   endTime: '10:00',
-  duration: '60',
   color: '#4285f4',
+  repeat: 'none',
+  customDays: [] as number[],
+  category: '',
+  newCatInput: '',
+  showNewCat: false,
 };
 
 /** Add `mins` to a "HH:mm" string, clamped to 23:59 */
@@ -52,6 +73,49 @@ function diffMins(start: string, end: string): number {
   return Math.max(0, eh * 60 + em - (sh * 60 + sm));
 }
 
+/** Assign side-by-side column slots to overlapping sessions. Returns a map of id → {col, totalCols}. */
+function computeOverlapLayout(sessions: Session[]): Map<string, { col: number; totalCols: number }> {
+  const result = new Map<string, { col: number; totalCols: number }>();
+  if (sessions.length === 0) return result;
+
+  // Sort by start time
+  const sorted = [...sessions].sort((a, b) =>
+    (a.startHour * 60 + a.startMin) - (b.startHour * 60 + b.startMin)
+  );
+
+  const startOf = (s: Session) => s.startHour * 60 + s.startMin;
+  const endOf   = (s: Session) => startOf(s) + s.durationMins;
+  const overlaps = (a: Session, b: Session) => startOf(a) < endOf(b) && startOf(b) < endOf(a);
+
+  // Group into clusters of mutually-overlapping sessions
+  const clusters: Session[][] = [];
+  for (const s of sorted) {
+    const cluster = clusters.find(c => c.some(cs => overlaps(cs, s)));
+    if (cluster) cluster.push(s);
+    else clusters.push([s]);
+  }
+
+  for (const cluster of clusters) {
+    // Greedy column assignment
+    const cols: number[] = [];
+    for (const s of cluster) {
+      const taken = cluster
+        .filter(o => o !== s && overlaps(o, s) && result.has(o.id))
+        .map(o => result.get(o.id)!.col);
+      let col = 0;
+      while (taken.includes(col)) col++;
+      cols.push(col);
+      result.set(s.id, { col, totalCols: 1 }); // totalCols filled in below
+    }
+    const totalCols = Math.max(...cols) + 1;
+    for (const s of cluster) {
+      result.set(s.id, { col: result.get(s.id)!.col, totalCols });
+    }
+  }
+
+  return result;
+}
+
 /** Snap raw pixel-offset (= minutes from midnight) to nearest 30-min boundary */
 function snapTo30(rawY: number): { hour: number; min: number } {
   const totalMins = rawY; // 60px === 60 mins
@@ -65,13 +129,13 @@ function fmtTime(hour: number, min: number) {
   return `${hour % 12 || 12}:${String(min).padStart(2, '0')} ${hour < 12 ? 'AM' : 'PM'}`;
 }
 
-export default function WeekCalendar({ sessions = [], selectedSession, onSelectSession, onAddSession }: Props) {
+export default function WeekCalendar({ sessions = [], selectedSession, onSelectSession, onAddSession, onEditSession, categories = [], onAddCategory, onDeleteCategory, toolbarExtra }: Props) {
   const [weekStart, setWeekStart] = useState(() =>
     startOfWeek(new Date(), { weekStartsOn: 0 })
   );
   const [showModal, setShowModal] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ ...DEFAULT_FORM });
-
   // Ref for the scrollable grid — used to set initial 8 AM scroll
   const weekGridRef = useRef<HTMLDivElement>(null);
 
@@ -87,7 +151,7 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
 
   // Ghost block: derived live from form so it updates as the user edits any field
   const ghostStartParts = form.startTime.split(':').map(Number);
-  const ghostDuration = Math.max(15, diffMins(form.startTime, form.endTime) || Number(form.duration) || 60);
+  const ghostDuration = Math.max(15, diffMins(form.startTime, form.endTime) || 60);
   const ghost = showModal
     ? {
         dayIndex: Number(form.day),
@@ -104,8 +168,13 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
     const { hour, min } = snapTo30(rawY);
     const startTime = `${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
     const endTime = addMins(startTime, 60);
-    setForm({ ...DEFAULT_FORM, day: String(colIdx), startTime, endTime, duration: '60' });
+    setForm({ ...DEFAULT_FORM, day: String(colIdx), startTime, endTime });
     setShowModal(true);
+  }
+
+  function handleSessionClick(e: React.MouseEvent, s: Session) {
+    e.stopPropagation();
+    onSelectSession?.(s.id);
   }
 
   function handleSave() {
@@ -113,7 +182,8 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
     const [h, m] = form.startTime.split(':').map(Number);
     const dayIdx = Number(form.day);
     const date = format(addDays(weekStart, dayIdx), 'yyyy-MM-dd');
-    onAddSession?.({
+    const recurrence = buildRRule(form.repeat, form.customDays, dayIdx);
+    const sessionData = {
       title: form.title.trim(),
       description: form.description.trim(),
       date,
@@ -122,13 +192,22 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
       startMin: m,
       durationMins: Math.max(1, diffMins(form.startTime, form.endTime)),
       color: form.color,
-    });
+      recurrence,
+      category: form.category || undefined,
+    };
+    if (editingId) {
+      onEditSession?.(editingId, sessionData);
+    } else {
+      onAddSession?.(sessionData);
+    }
     setShowModal(false);
+    setEditingId(null);
     setForm({ ...DEFAULT_FORM });
   }
 
   function handleCancel() {
     setShowModal(false);
+    setEditingId(null);
     setForm({ ...DEFAULT_FORM });
   }
 
@@ -143,6 +222,7 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
         <button className="cal-nav-btn" onClick={() => setWeekStart(w => addWeeks(w, 1))}>›</button>
         <span className="week-range-label">{weekLabel}</span>
         <span className="click-hint">Click any time slot to add a session</span>
+        {toolbarExtra}
       </div>
 
       {/* grid */}
@@ -197,23 +277,36 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
               )}
 
               {/* Confirmed sessions */}
-              {sessions
-                .filter(s => s.dayIndex === colIdx)
-                .map(s => (
-                  <div
-                    key={s.id}
-                    className={`session-block ${selectedSession === s.id ? 'selected' : ''}`}
-                    style={{
-                      top: s.startHour * 60 + s.startMin,
-                      height: Math.max(s.durationMins, 22),
-                      background: s.color,
-                    }}
-                    onClick={e => { e.stopPropagation(); onSelectSession?.(s.id); }}
-                  >
-                    <div className="session-title">{s.title}</div>
-                    <div className="session-time">{fmtTime(s.startHour, s.startMin)}</div>
-                  </div>
-                ))}
+              {(() => {
+                const daySessions = sessions.filter(
+                  s => s.dayIndex === colIdx && s.date === format(days[colIdx], 'yyyy-MM-dd')
+                );
+                const layout = computeOverlapLayout(daySessions);
+                return daySessions.map(s => {
+                  const { col, totalCols } = layout.get(s.id) ?? { col: 0, totalCols: 1 };
+                  const width = `calc(${100 / totalCols}% - ${totalCols > 1 ? '2px' : '0px'})`;
+                  const left = `${(col / totalCols) * 100}%`;
+                  return (
+                    <div
+                      key={s.id}
+                      className={`session-block ${selectedSession === s.id ? 'selected' : ''}`}
+                      style={{
+                        top: s.startHour * 60 + s.startMin,
+                        height: Math.max(s.durationMins, 22),
+                        background: s.color,
+                        width,
+                        left,
+                        opacity: totalCols > 1 ? 0.92 : 1,
+                        boxShadow: totalCols > 1 ? '2px 0 0 rgba(0,0,0,0.15)' : undefined,
+                      }}
+                      onClick={e => handleSessionClick(e, s)}
+                    >
+                      <div className="session-title">{s.title}</div>
+                      <div className="session-time">{fmtTime(s.startHour, s.startMin)}</div>
+                    </div>
+                  );
+                });
+              })()}
             </div>
           ))}
         </div>
@@ -223,7 +316,7 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
       {showModal && (
         <div className="modal-overlay" onClick={handleCancel}>
           <div className="modal" onClick={e => e.stopPropagation()}>
-            <h3>Add Work Session</h3>
+            <h3>{editingId ? 'Edit Session' : 'Add Work Session'}</h3>
 
             <div className="modal-field">
               <label>Title *</label>
@@ -237,17 +330,6 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
             </div>
 
             <div className="modal-field">
-              <label>Description (optional)</label>
-              <textarea
-                className="modal-textarea"
-                value={form.description}
-                onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-                placeholder="What are you working on?"
-                rows={3}
-              />
-            </div>
-
-            <div className="modal-field">
               <label>Day</label>
               <select value={form.day} onChange={e => setForm(f => ({ ...f, day: e.target.value }))}>
                 {DAY_NAMES.map((d, i) => (
@@ -255,6 +337,49 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
                 ))}
               </select>
             </div>
+
+            <div className="modal-field">
+              <label>Repeat</label>
+              <select value={form.repeat} onChange={e => setForm(f => ({ ...f, repeat: e.target.value, customDays: [] }))}>
+                <option value="none">Does not repeat</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly on {DAY_NAMES[Number(form.day)]}</option>
+                <option value="custom">Custom…</option>
+              </select>
+            </div>
+
+            {form.repeat === 'custom' && (
+              <div className="modal-field">
+                <label>Repeat on</label>
+                <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                  {DAY_NAMES.map((d, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => setForm(f => ({
+                        ...f,
+                        customDays: f.customDays.includes(i)
+                          ? f.customDays.filter(x => x !== i)
+                          : [...f.customDays, i],
+                      }))}
+                      style={{
+                        width: '2.2rem',
+                        height: '2.2rem',
+                        borderRadius: '50%',
+                        border: '1.5px solid #4285f4',
+                        background: form.customDays.includes(i) ? '#4285f4' : '#fff',
+                        color: form.customDays.includes(i) ? '#fff' : '#4285f4',
+                        fontWeight: 600,
+                        fontSize: '0.75rem',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {d[0]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="modal-row">
               <div className="modal-field">
@@ -264,7 +389,8 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
                   value={form.startTime}
                   onChange={e => {
                     const startTime = e.target.value;
-                    const endTime = addMins(startTime, Number(form.duration) || 60);
+                    const dur = diffMins(form.startTime, form.endTime) || 60;
+                    const endTime = addMins(startTime, dur);
                     setForm(f => ({ ...f, startTime, endTime }));
                   }}
                 />
@@ -274,28 +400,58 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
                 <input
                   type="time"
                   value={form.endTime}
-                  onChange={e => {
-                    const endTime = e.target.value;
-                    const mins = diffMins(form.startTime, endTime);
-                    setForm(f => ({ ...f, endTime, duration: String(mins) }));
-                  }}
+                  onChange={e => setForm(f => ({ ...f, endTime: e.target.value }))}
                 />
               </div>
             </div>
 
             <div className="modal-field">
-              <label>Duration (mins)</label>
-              <input
-                type="number"
-                min={1}
-                step={15}
-                value={form.duration}
-                onChange={e => {
-                  const duration = e.target.value;
-                  const endTime = addMins(form.startTime, Number(duration) || 0);
-                  setForm(f => ({ ...f, duration, endTime }));
-                }}
-              />
+              <label>Category</label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginTop: '2px' }}>
+                <button type="button" onClick={() => setForm(f => ({ ...f, category: '' }))}
+                  style={{ padding: '0.2rem 0.55rem', borderRadius: '999px', fontSize: '0.78rem', cursor: 'pointer', border: form.category === '' ? '1.5px solid #4285f4' : '1.5px solid #ccc', background: form.category === '' ? '#e8f0fe' : '#f5f5f5', color: form.category === '' ? '#1a73e8' : '#444', fontWeight: 500 }}>
+                  None
+                </button>
+                {categories.map((c: string) => (
+                  <span key={c} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.2rem' }}>
+                    <button type="button" onClick={() => setForm(f => ({ ...f, category: c }))}
+                      style={{ padding: '0.2rem 0.55rem', borderRadius: '999px', fontSize: '0.78rem', cursor: 'pointer', border: form.category === c ? '1.5px solid #4285f4' : '1.5px solid #ccc', background: form.category === c ? '#e8f0fe' : '#f5f5f5', color: form.category === c ? '#1a73e8' : '#444', fontWeight: 500 }}>
+                      {c}
+                    </button>
+                    <button type="button" title={`Delete "${c}"`}
+                      onClick={() => { onDeleteCategory?.(c); if (form.category === c) setForm(f => ({ ...f, category: '' })); }}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#aaa', fontSize: '0.7rem', padding: '0', lineHeight: 1 }}>
+                      ✕
+                    </button>
+                  </span>
+                ))}
+                {!form.showNewCat ? (
+                  <button type="button" onClick={() => setForm(f => ({ ...f, showNewCat: true }))}
+                    style={{ padding: '0.2rem 0.55rem', borderRadius: '999px', fontSize: '0.78rem', cursor: 'pointer', border: '1.5px dashed #aaa', background: 'none', color: '#666' }}>
+                    + Add
+                  </button>
+                ) : (
+                  <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+                    <input autoFocus value={form.newCatInput} onChange={e => setForm(f => ({ ...f, newCatInput: e.target.value }))}
+                      placeholder="Name" style={{ width: '90px', fontSize: '0.8rem', padding: '0.2rem 0.4rem' }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && form.newCatInput.trim()) {
+                          onAddCategory?.(form.newCatInput.trim());
+                          setForm(f => ({ ...f, category: f.newCatInput.trim(), newCatInput: '', showNewCat: false }));
+                        } else if (e.key === 'Escape') {
+                          setForm(f => ({ ...f, newCatInput: '', showNewCat: false }));
+                        }
+                      }}
+                    />
+                    <button type="button" className="btn-save" style={{ padding: '0.2rem 0.5rem', fontSize: '0.78rem' }}
+                      onClick={() => { if (form.newCatInput.trim()) { onAddCategory?.(form.newCatInput.trim()); setForm(f => ({ ...f, category: f.newCatInput.trim(), newCatInput: '', showNewCat: false })); } }}>
+                      Add
+                    </button>
+                    <button type="button" onClick={() => setForm(f => ({ ...f, newCatInput: '', showNewCat: false }))}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#aaa', fontSize: '0.85rem' }}>✕</button>
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="modal-field">
@@ -315,11 +471,12 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
 
             <div className="modal-actions">
               <button className="btn-cancel" onClick={handleCancel}>Cancel</button>
-              <button className="btn-save" onClick={handleSave} disabled={!form.title.trim()}>Add Session</button>
+              <button className="btn-save" onClick={handleSave} disabled={!form.title.trim()}>{editingId ? 'Save Changes' : 'Add Session'}</button>
             </div>
           </div>
         </div>
       )}
+
     </div>
   );
 }

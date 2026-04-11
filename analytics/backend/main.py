@@ -1,19 +1,25 @@
 """
 CalCoach Analytics Backend — FastAPI
-Persists reflection data to analytics/data/reflections.json for downstream analytics and RL.
+Persists reflection data to Google Firestore.
 """
 
 from __future__ import annotations
 
-import json
-from datetime import datetime
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Repo root `.env` (e.g. FIREBASE_SERVICE_ACCOUNT_PATH) — works when cwd is analytics/backend
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
+
+from datetime import datetime
 from typing import List, Optional
-from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+from firestore_client import get_db
 
 app = FastAPI(title="CalCoach API")
 
@@ -25,27 +31,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── JSON file persistence ─────────────────────────────────────────────────────
-
-DATA_DIR = Path(__file__).parent.parent / "data"
-REFLECTIONS_FILE = DATA_DIR / "reflections.json"
-
-
-def _load() -> list[dict]:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if REFLECTIONS_FILE.exists():
-        try:
-            return json.loads(REFLECTIONS_FILE.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return []
-    return []
-
-
-def _save(data: list[dict]) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    REFLECTIONS_FILE.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+COLLECTION = "reflections"
+USERS_COLLECTION = "users"
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -53,7 +40,6 @@ def _save(data: list[dict]) -> None:
 class ReflectionIn(BaseModel):
     """
     Full reflection record sent from the frontend.
-    Each field maps directly to what gets stored in reflections.json.
     """
     # Session identity
     sessionId: str
@@ -66,7 +52,7 @@ class ReflectionIn(BaseModel):
     # Reflection data
     productivity: int         # 1 (least) – 5 (most)
     reflectionText: str
-    # Client-generated fields (we trust them and re-stamp server-side too)
+    # Client-generated fields
     id: str
     savedAt: str              # ISO timestamp from client
 
@@ -75,58 +61,92 @@ class ReflectionOut(ReflectionIn):
     serverSavedAt: str        # server-side timestamp for audit
 
 
+class UserOut(BaseModel):
+    id: str
+    displayName: str
+    email: str
+    createdAt: str
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/reflections", response_model=List[ReflectionOut])
-def list_reflections(session_id: Optional[str] = None):
+async def list_reflections(session_id: Optional[str] = None):
     """Return all reflections, optionally filtered by sessionId."""
-    data = _load()
+    db = get_db()
+    col = db.collection(COLLECTION)
+
     if session_id:
-        data = [r for r in data if r.get("sessionId") == session_id]
-    return data
+        query = col.where("sessionId", "==", session_id)
+    else:
+        query = col
+
+    docs = [doc.to_dict() async for doc in query.stream()]
+    return docs
 
 
 @app.post("/reflections", response_model=ReflectionOut, status_code=201)
-def create_reflection(body: ReflectionIn):
-    """
-    Save a reflection entry. Appends to reflections.json.
-
-    JSON schema for each record:
-    {
-      "id":             "client-generated uuid",
-      "sessionId":      "client-generated uuid",
-      "title":          "Work session title",
-      "description":    "Optional description (may be empty string)",
-      "date":           "yyyy-MM-dd",
-      "startTime":      "HH:mm",
-      "endTime":        "HH:mm",
-      "productivity":   1-5,
-      "reflectionText": "User's free-text reflection",
-      "savedAt":        "ISO timestamp (client)",
-      "serverSavedAt":  "ISO timestamp (server)"
-    }
-    """
+async def create_reflection(body: ReflectionIn):
+    """Save a reflection entry to Firestore."""
     if not 1 <= body.productivity <= 5:
         raise HTTPException(400, "productivity must be 1–5")
 
     record = body.dict()
     record["serverSavedAt"] = datetime.utcnow().isoformat() + "Z"
 
-    data = _load()
-    data.append(record)
-    _save(data)
+    db = get_db()
+    # Use the client-supplied id as the Firestore document ID for idempotency
+    await db.collection(COLLECTION).document(record["id"]).set(record)
 
     return record
 
 
 @app.delete("/reflections/{reflection_id}")
-def delete_reflection(reflection_id: str):
-    data = _load()
-    filtered = [r for r in data if r.get("id") != reflection_id]
-    if len(filtered) == len(data):
+async def delete_reflection(reflection_id: str):
+    db = get_db()
+    doc_ref = db.collection(COLLECTION).document(reflection_id)
+    doc = await doc_ref.get()
+    if not doc.exists:
         raise HTTPException(404, "Reflection not found")
-    _save(filtered)
+    await doc_ref.delete()
     return {"ok": True}
+
+
+# ── Users (dummy data for Firestore testing) ──────────────────────────────────
+
+@app.get("/users", response_model=List[UserOut])
+async def list_users():
+    db = get_db()
+    out: List[UserOut] = []
+    async for doc in db.collection(USERS_COLLECTION).stream():
+        data = doc.to_dict() or {}
+        out.append(
+            UserOut(
+                id=doc.id,
+                displayName=data.get("displayName", ""),
+                email=data.get("email", ""),
+                createdAt=data.get("createdAt", ""),
+            )
+        )
+    return out
+
+
+@app.post("/users/seed", response_model=List[UserOut])
+async def seed_dummy_users():
+    """Write a few fixed documents to the `users` collection (safe to call repeatedly)."""
+    db = get_db()
+    now = datetime.utcnow().isoformat() + "Z"
+    rows = [
+        ("dummy_alice", "Alice", "alice@example.test"),
+        ("dummy_bob", "Bob", "bob@example.test"),
+        ("dummy_carol", "Carol", "carol@example.test"),
+    ]
+    out: List[UserOut] = []
+    for doc_id, name, email in rows:
+        record = {"displayName": name, "email": email, "createdAt": now, "seed": True}
+        await db.collection(USERS_COLLECTION).document(doc_id).set(record)
+        out.append(UserOut(id=doc_id, displayName=name, email=email, createdAt=now))
+    return out
 
 
 # ── Chat stub (wire up LLM here) ──────────────────────────────────────────────
@@ -141,6 +161,6 @@ class ChatResponse(BaseModel):
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(body: ChatMessage):
+async def chat(body: ChatMessage):
     # TODO: retrieve past reflections for context, call LLM
     return {"reply": "[LLM stub] Connect an LLM here to generate coaching responses."}

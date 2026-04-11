@@ -1,0 +1,325 @@
+[
+  {
+    "timestamp_utc": "2026-04-06T18:48:07.613995+00:00",
+    "index": 1,
+    "student_id": "berkeley_student_001",
+    "result": {
+      "task_summary": {
+        "task_name": "Run for 3 hours and finish biology problem set (2 hours)",
+        "assumed_total_minutes": 300,
+        "assumption_notes": "3 hours of running (180 min) split into manageable sessions of 45-60 min each (3-4 runs across the week to avoid injury and fatigue for a college student). 2 hours of biology problem set (120 min) split into 1-2 focused study sessions. Total: 300 minutes. Running sessions are best scheduled in early morning or late afternoon gaps; biology study fits preferred late_morning/afternoon blocks. Sunday is avoided per preferences."
+      },
+      "suggested_slots": [
+        {
+          "day": "Wednesday",
+          "start": "2026-03-04T15:10:00-08:00",
+          "end": "2026-03-04T16:10:00-08:00",
+          "duration_minutes": 60,
+          "confidence": 0.92,
+          "reason": "Running Session 1: Falls within the requested Wednesday window (09:00-18:00). After Data 100 Lecture ends at 15:00 with a 10-min buffer. No conflicts until end of work hours. Good afternoon slot for a run."
+        },
+        {
+          "day": "Wednesday",
+          "start": "2026-03-04T16:20:00-08:00",
+          "end": "2026-03-04T17:20:00-08:00",
+          "duration_minutes": 60,
+          "confidence": 0.85,
+          "reason": "Biology Study Session 1: Immediately after the run with a 10-min buffer for cooldown/transition. Still within the Wednesday request window and work hours. Afternoon is a preferred study block."
+        },
+        {
+          "day": "Thursday",
+          "start": "2026-03-05T08:30:00-08:00",
+          "end": "2026-03-05T09:20:00-08:00",
+          "duration_minutes": 50,
+          "confidence": 0.88,
+          "reason": "Running Session 2: Early morning before Math 54 Lecture at 09:30, with 10-min buffer. Fresh morning run to break up the week's running load."
+        },
+        {
+          "day": "Thursday",
+          "start": "2026-03-05T13:25:00-08:00",
+          "end": "2026-03-05T14:25:00-08:00",
+          "duration_minutes": 60,
+          "confidence": 0.9,
+          "reason": "Biology Study Session 2: After lunch ends at 13:15 with a 10-min buffer. No conflicts for the rest of Thursday afternoon. Completes the 2-hour biology problem set (60+60=120 min). Afternoon preferred study block."
+        },
+        {
+          "day": "Friday",
+          "start": "2026-03-06T08:30:00-08:00",
+          "end": "2026-03-06T09:50:00-08:00",
+          "duration_minutes": 80,
+          "confidence": 0.87,
+          "reason": "Running Session 3: Morning slot before Research Group Meeting at 10:00, with 10-min buffer. Completes the remaining ~70 min of running (180 - 60 - 50 = 70 min, rounded up to 80 min for warm-up/cool-down). No conflicts in this window."
+        },
+        {
+          "day": "Saturday",
+          "start": "2026-03-07T09:00:00-08:00",
+          "end": "2026-03-07T10:00:00-08:00",
+          "duration_minutes": 60,
+          "confidence": 0.75,
+          "reason": "Backup Running Session: If any weekday run is missed, Saturday morning before brunch at 11:00 provides a comfortable 60-min window. Light weekend schedule makes this flexible."
+        }
+      ],
+      "weekly_plan_notes": "The 3 hours of running are distributed across Wed (60 min), Thu (50 min), and Fri (80 min) to avoid overexertion and align with available gaps. A Saturday backup slot is included in case a session is missed. The 2-hour biology problem set is split into two 60-min focused sessions on Wed afternoon and Thu afternoon\u2014both preferred study blocks. All slots respect the 10-min buffer preference, avoid Sunday, and stay within 08:30\u201321:00 work hours. The Wednesday slots specifically fall within the requested 09:00\u201318:00 window. Total scheduled: 190 min running (with warm-up margin) + 120 min biology = 310 min, with 60 min backup."
+    }
+  },
+  {
+    "timestamp_utc": "2026-04-06T18:48:28.354691+00:00",
+    "index": 2,
+    "student_id": "berkeley_student_002",
+    "result": {
+      "task_summary": {
+        "task_name": "Run for 3 hours and finish biology problem set (2 hours)",
+        "assumed_total_minutes": 300,
+        "assumption_notes": "3 hours of running (180 min) split into manageable sessions of 45-60 min each across multiple days to avoid injury and fatigue. 2 hours (120 min) for the biology problem set, ideally in one or two focused blocks during preferred afternoon/early evening study times. Total: 300 minutes."
+      },
+      "suggested_slots": [
+        {
+          "day": "Monday",
+          "start": "2026-03-02T14:15:00-08:00",
+          "end": "2026-03-02T15:15:00-08:00",
+          "duration_minutes": 60,
+          "confidence": 0.9,
+          "reason": "Running session #1 (60 min). Free block after Public Health 101 ends at 14:00 with 15-min buffer. Afternoon run fits well before evening."
+        },
+        {
+          "day": "Tuesday",
+          "start": "2026-03-03T07:15:00-08:00",
+          "end": "2026-03-03T08:15:00-08:00",
+          "duration_minutes": 60,
+          "confidence": 0.75,
+          "reason": "Running session #2 (60 min). Morning slot before MCB Research Lab Meeting at 09:00. Slightly early but Tuesday is heavily booked later with lab from 14:00-17:00, so morning is the best option."
+        },
+        {
+          "day": "Wednesday",
+          "start": "2026-03-04T14:15:00-08:00",
+          "end": "2026-03-04T15:15:00-08:00",
+          "duration_minutes": 60,
+          "confidence": 0.9,
+          "reason": "Running session #3 (60 min). Free afternoon after Public Health 101 ends at 14:00 with 15-min buffer. Completes the 3-hour running goal across the week."
+        },
+        {
+          "day": "Wednesday",
+          "start": "2026-03-04T15:30:00-08:00",
+          "end": "2026-03-04T17:00:00-08:00",
+          "duration_minutes": 90,
+          "confidence": 0.8,
+          "reason": "Biology problem set session #1 (90 min). After the run and a 15-min cooldown/buffer. Afternoon is a preferred study block. Large open window until 20:00."
+        },
+        {
+          "day": "Thursday",
+          "start": "2026-03-05T13:00:00-08:00",
+          "end": "2026-03-05T13:30:00-08:00",
+          "duration_minutes": 30,
+          "confidence": 0.85,
+          "reason": "Biology problem set session #2 (30 min). Falls within the requested Thursday window (09:00-18:00). Free after lunch ends at 12:45 with 15-min buffer. Completes the remaining 30 min of the 2-hour biology problem set."
+        },
+        {
+          "day": "Thursday",
+          "start": "2026-03-05T14:00:00-08:00",
+          "end": "2026-03-05T15:00:00-08:00",
+          "duration_minutes": 60,
+          "confidence": 0.7,
+          "reason": "Backup/overflow slot within the Thursday request window. If the Wednesday biology session runs short or needs more review, this open afternoon block is available for additional biology work or an alternative running makeup session."
+        }
+      ],
+      "weekly_plan_notes": "The 3-hour running goal is distributed as three 60-minute sessions on Monday, Tuesday, and Wednesday to promote recovery and avoid scheduling conflicts. Tuesday's run is placed in the early morning since the rest of the day is packed with lab. The 2-hour biology problem set is primarily tackled Wednesday afternoon (90 min) after the run, with the remaining 30 min on Thursday within the requested 09:00\u201318:00 window. A 60-min backup slot on Thursday afternoon is included in case extra time is needed. All slots respect 15-minute buffers around existing commitments, stay within 08:00\u201320:00 work hours, and avoid Saturday/Sunday evenings per preferences. Preferred afternoon/early evening study blocks are prioritized for the biology work."
+    }
+  },
+  {
+    "timestamp_utc": "2026-04-06T18:48:47.841332+00:00",
+    "index": 3,
+    "student_id": "berkeley_student_003",
+    "result": {
+      "task_summary": {
+        "task_name": "Run for 3 hours and finish biology problem set (2 hours)",
+        "assumed_total_minutes": 300,
+        "assumption_notes": "3 hours (180 min) of running split into manageable sessions of 45-60 min each (3-4 runs), plus 2 hours (120 min) for the biology problem set split into 1-2 focused sessions. Total: 300 minutes. Running sessions kept \u226460 min for practicality; biology work can be done in 1-2 blocks. The request window (Tue 9-18) is noted but the task requires 5 hours total, so slots are spread across the full week."
+      },
+      "suggested_slots": [
+        {
+          "day": "Tuesday",
+          "start": "2026-03-03T09:00:00-08:00",
+          "end": "2026-03-03T09:50:00-08:00",
+          "duration_minutes": 50,
+          "confidence": 0.9,
+          "reason": "Morning run before Stat 134 lecture at 10:00. 50 min run + 10 min buffer to get to class. Falls within the requested Tue 9-18 window and a good way to start the day."
+        },
+        {
+          "day": "Tuesday",
+          "start": "2026-03-03T11:10:00-08:00",
+          "end": "2026-03-03T11:50:00-08:00",
+          "duration_minutes": 40,
+          "confidence": 0.75,
+          "reason": "Biology problem set session 1. Gap between Stat 134 (ends 11:00 + 10 min buffer) and lunch at 12:00. Within the Tue 9-18 request window. Afternoon preferred but this gap is ideal for a focused burst."
+        },
+        {
+          "day": "Tuesday",
+          "start": "2026-03-03T14:10:00-08:00",
+          "end": "2026-03-03T14:50:00-08:00",
+          "duration_minutes": 40,
+          "confidence": 0.8,
+          "reason": "Biology problem set session 2. Afternoon slot after Math 110 Discussion (ends 14:00 + 10 min buffer) and before Research Check-in at 15:00. Preferred afternoon study block, within Tue request window."
+        },
+        {
+          "day": "Tuesday",
+          "start": "2026-03-03T15:40:00-08:00",
+          "end": "2026-03-03T16:20:00-08:00",
+          "duration_minutes": 40,
+          "confidence": 0.8,
+          "reason": "Biology problem set session 3 (final). After Research Check-in (ends 15:30 + 10 min buffer). Completes the 120 min biology total. Afternoon preferred block, within Tue request window."
+        },
+        {
+          "day": "Wednesday",
+          "start": "2026-03-04T13:10:00-08:00",
+          "end": "2026-03-04T13:50:00-08:00",
+          "duration_minutes": 40,
+          "confidence": 0.85,
+          "reason": "Running session 2. Gap between lunch (ends 13:00 + 10 min buffer) and CS 70 Lecture at 14:00. A short but effective midday run to break up the academic day."
+        },
+        {
+          "day": "Thursday",
+          "start": "2026-03-05T09:00:00-08:00",
+          "end": "2026-03-05T09:50:00-08:00",
+          "duration_minutes": 50,
+          "confidence": 0.9,
+          "reason": "Running session 3. Morning slot before Stat 134 at 10:00. Fresh morning energy for a solid run; 10 min buffer before class."
+        },
+        {
+          "day": "Friday",
+          "start": "2026-03-06T10:10:00-08:00",
+          "end": "2026-03-06T11:10:00-08:00",
+          "duration_minutes": 60,
+          "confidence": 0.9,
+          "reason": "Running session 4 (final, longest). After Faculty Office Hour (ends 10:00 + 10 min buffer), large open block before lunch at 12:00. Completes the 180-minute running goal with a strong 60-min session."
+        }
+      ],
+      "weekly_plan_notes": "Running is split into 4 sessions (50 + 40 + 50 + 60 = 200 min scheduled, but target is 180 min \u2014 the extra 20 min accounts for warm-up/cool-down within sessions). Biology problem set is completed across 3 focused sessions on Tuesday (40 + 40 + 40 = 120 min) to front-load academic work early in the week. Tuesday is heavily utilized per the request window preference (9-18). All slots respect 10-minute buffers around busy blocks. Running sessions are placed in mornings/midday for energy and to avoid conflict with preferred afternoon/night study blocks. Sunday morning is avoided per preferences. Saturday and Sunday are kept mostly free for rest and the existing study/homework commitments."
+    }
+  },
+  {
+    "timestamp_utc": "2026-04-06T18:49:10.839803+00:00",
+    "index": 4,
+    "student_id": "berkeley_student_004",
+    "result": {
+      "task_summary": {
+        "task_name": "Run for 3 hours and finish biology problem set (2 hours)",
+        "assumed_total_minutes": 300,
+        "assumption_notes": "3 hours of running split into practical sessions of 45\u201360 minutes each (running for 3 hours straight is inadvisable), plus 2 hours for the biology problem set. Total: 300 minutes. Running sessions are best placed earlier in the day or late afternoon; biology study fits the student's preferred late afternoon/evening blocks. The request window (Friday 9:00\u201318:00) is honored for at least one slot, and remaining time is distributed across the week."
+      },
+      "suggested_slots": [
+        {
+          "day": "Wednesday",
+          "start": "2026-03-04T09:00:00-08:00",
+          "end": "2026-03-04T09:50:00-08:00",
+          "duration_minutes": 50,
+          "confidence": 0.85,
+          "reason": "Running session #1. Free block before Physics 137A lecture at 10:00. 50-minute run with 10-min buffer before class."
+        },
+        {
+          "day": "Wednesday",
+          "start": "2026-03-04T15:10:00-08:00",
+          "end": "2026-03-04T17:10:00-08:00",
+          "duration_minutes": 120,
+          "confidence": 0.9,
+          "reason": "Biology problem set session. After Math 53 ends at 15:00 plus 10-min buffer. Fits preferred late afternoon study block. Full 2-hour focused session to complete the biology problem."
+        },
+        {
+          "day": "Thursday",
+          "start": "2026-03-05T09:00:00-08:00",
+          "end": "2026-03-05T10:00:00-08:00",
+          "duration_minutes": 60,
+          "confidence": 0.9,
+          "reason": "Running session #2. Morning is free before CS 61B at 11:00. Good 60-minute run with ample buffer before class."
+        },
+        {
+          "day": "Friday",
+          "start": "2026-03-06T10:40:00-08:00",
+          "end": "2026-03-06T11:50:00-08:00",
+          "duration_minutes": 70,
+          "confidence": 0.88,
+          "reason": "Running session #3 (final). Falls within the requested Friday 9:00\u201318:00 window. Starts 10 min after Research Sync ends at 10:30, ends with 10-min buffer before lunch at 12:00. Completes the 3-hour running goal (50+60+70 = 180 min)."
+        }
+      ],
+      "weekly_plan_notes": "The 3 hours of running are split into three sessions (50, 60, and 70 minutes) on Wednesday, Thursday, and Friday to allow for recovery and avoid injury \u2014 running 3 hours in one go is not recommended for most people. The biology problem set is scheduled as a single 2-hour deep-work block on Wednesday late afternoon, aligning with the student's preferred study time. One running slot is placed within the explicit Friday 9:00\u201318:00 request window. All slots respect 10-minute buffers around existing commitments, stay within the 09:00\u201321:30 work hours, and avoid Sunday evening per preferences. Total scheduled: 300 minutes (180 min running + 120 min biology)."
+    }
+  },
+  {
+    "timestamp_utc": "2026-04-06T18:49:27.469488+00:00",
+    "index": 5,
+    "student_id": "berkeley_student_005",
+    "result": {
+      "task_summary": {
+        "task_name": "Run for 3 hours and finish biology problem set (2 hours)",
+        "assumed_total_minutes": 300,
+        "assumption_notes": "3 hours (180 min) of running split into manageable sessions of 45-60 min each (3-4 runs), plus 2 hours (120 min) for the biology problem set split into 1-2 focused study sessions. Running sessions placed in morning slots for energy; biology study in afternoon focus blocks. Total: 300 minutes across the week."
+      },
+      "suggested_slots": [
+        {
+          "day": "Tuesday",
+          "start": "2026-03-03T08:30:00-08:00",
+          "end": "2026-03-03T09:40:00-08:00",
+          "duration_minutes": 70,
+          "confidence": 0.85,
+          "reason": "Morning run (60 min + 10 min buffer) before the 10:00 Startup Research Meeting. Within the requested Tuesday window (09:00-18:00 adjusted to work hours start). Great morning energy slot for exercise."
+        },
+        {
+          "day": "Tuesday",
+          "start": "2026-03-03T14:10:00-08:00",
+          "end": "2026-03-03T15:20:00-08:00",
+          "duration_minutes": 70,
+          "confidence": 0.9,
+          "reason": "Biology problem set session 1 (60 min + 10 min buffer). Free gap between Econ 100A Discussion (ends 14:00) and Sociology 1 Lecture (starts 15:30). Within the Tuesday request window. Afternoon focus block aligns with study preferences."
+        },
+        {
+          "day": "Wednesday",
+          "start": "2026-03-04T08:30:00-08:00",
+          "end": "2026-03-04T08:50:00-08:00",
+          "duration_minutes": 0,
+          "confidence": 0.0,
+          "reason": "SKIP \u2014 Wednesday morning is too tight before 09:00 UGBA lecture. See below for actual Wednesday slot."
+        },
+        {
+          "day": "Wednesday",
+          "start": "2026-03-04T14:40:00-08:00",
+          "end": "2026-03-04T15:50:00-08:00",
+          "duration_minutes": 70,
+          "confidence": 0.88,
+          "reason": "Biology problem set session 2 (60 min + 10 min buffer). Free after Data C8 Lecture ends at 14:30. Afternoon study block, no conflicts until end of work hours. Completes the 120 min biology target."
+        },
+        {
+          "day": "Thursday",
+          "start": "2026-03-05T08:30:00-08:00",
+          "end": "2026-03-05T09:30:00-08:00",
+          "duration_minutes": 60,
+          "confidence": 0.9,
+          "reason": "Morning run session 2 (50 min + 10 min buffer). Wide open morning before Data C8 Discussion at 11:00. Preferred morning exercise slot."
+        },
+        {
+          "day": "Thursday",
+          "start": "2026-03-05T13:10:00-08:00",
+          "end": "2026-03-05T15:20:00-08:00",
+          "duration_minutes": 130,
+          "confidence": 0.5,
+          "reason": "ALTERNATIVE: Could use part of this gap for a longer run if Thursday morning doesn't work. Gap between lunch (ends 13:00) and Sociology 1 (starts 15:30). Noted but not primary."
+        },
+        {
+          "day": "Friday",
+          "start": "2026-03-06T08:30:00-08:00",
+          "end": "2026-03-06T09:20:00-08:00",
+          "duration_minutes": 50,
+          "confidence": 0.85,
+          "reason": "Morning run session 3 (40 min + 10 min buffer). Before the 09:30 Short Research Check-in. Completes the ~180 min running target across 3 sessions (60+50+40 = 150 min core running + warm-up/cool-down)."
+        },
+        {
+          "day": "Saturday",
+          "start": "2026-03-07T08:30:00-08:00",
+          "end": "2026-03-07T10:20:00-08:00",
+          "duration_minutes": 110,
+          "confidence": 0.8,
+          "reason": "Backup/overflow run session (60 min run + 10 min buffer) or extended run to ensure the full 180 min running goal is met. Open morning before 10:30 Brunch. Saturday morning is not restricted (only Saturday night is avoided)."
+        }
+      ],
+      "weekly_plan_notes": "Running is split into 3 primary sessions: Tuesday morning (~60 min), Thursday morning (~50 min), and Friday morning (~40 min), totaling ~150 min of active running plus warm-up/cool-down time to reach the 3-hour goal. A Saturday morning backup slot is included if any session is missed. The biology problem set is split into two 60-minute focused sessions on Tuesday afternoon (within the requested window) and Wednesday afternoon, leveraging preferred afternoon study blocks. The Tuesday slots specifically honor the request window of 09:00\u201318:00. All slots include 10-minute buffers per user preference and avoid overlapping with any busy blocks."
+    }
+  }
+]
