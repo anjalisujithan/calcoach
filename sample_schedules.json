@@ -1,0 +1,287 @@
+[
+    {
+      "studentProfile": {
+        "id": "berkeley_student_001",
+        "major": "EECS",
+        "year": "Sophomore"
+      },
+      "timezone": "America/Los_Angeles",
+      "range": {
+        "start": "2026-03-02T00:00:00-08:00",
+        "end": "2026-03-09T00:00:00-08:00"
+      },
+      "busy": [
+        { "start": "2026-03-02T09:00:00-08:00", "end": "2026-03-02T10:00:00-08:00", "title": "CS 61C Lecture", "type": "class" },
+        { "start": "2026-03-02T11:00:00-08:00", "end": "2026-03-02T12:30:00-08:00", "title": "EECS 16B Lecture", "type": "class" },
+        { "start": "2026-03-02T12:30:00-08:00", "end": "2026-03-02T13:15:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-02T14:00:00-08:00", "end": "2026-03-02T15:00:00-08:00", "title": "Data 100 Lecture", "type": "class" },
+  
+        { "start": "2026-03-03T09:30:00-08:00", "end": "2026-03-03T11:00:00-08:00", "title": "Math 54 Lecture", "type": "class" },
+        { "start": "2026-03-03T12:00:00-08:00", "end": "2026-03-03T12:45:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-03T13:00:00-08:00", "end": "2026-03-03T14:00:00-08:00", "title": "Data 100 Discussion", "type": "discussion" },
+        { "start": "2026-03-03T16:00:00-08:00", "end": "2026-03-03T16:30:00-08:00", "title": "Undergrad Research Check-in", "type": "research" },
+  
+        { "start": "2026-03-04T09:00:00-08:00", "end": "2026-03-04T10:00:00-08:00", "title": "CS 61C Lecture", "type": "class" },
+        { "start": "2026-03-04T11:00:00-08:00", "end": "2026-03-04T12:30:00-08:00", "title": "EECS 16B Lecture", "type": "class" },
+        { "start": "2026-03-04T12:30:00-08:00", "end": "2026-03-04T13:15:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-04T14:00:00-08:00", "end": "2026-03-04T15:00:00-08:00", "title": "Data 100 Lecture", "type": "class" },
+  
+        { "start": "2026-03-05T09:30:00-08:00", "end": "2026-03-05T11:00:00-08:00", "title": "Math 54 Lecture", "type": "class" },
+        { "start": "2026-03-05T11:30:00-08:00", "end": "2026-03-05T12:30:00-08:00", "title": "EECS 16B Discussion", "type": "discussion" },
+        { "start": "2026-03-05T12:30:00-08:00", "end": "2026-03-05T13:15:00-08:00", "title": "Lunch", "type": "meal" },
+  
+        { "start": "2026-03-06T10:00:00-08:00", "end": "2026-03-06T11:00:00-08:00", "title": "Research Group Meeting", "type": "research" },
+        { "start": "2026-03-06T12:00:00-08:00", "end": "2026-03-06T12:45:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-06T14:00:00-08:00", "end": "2026-03-06T16:00:00-08:00", "title": "CS 61C Lab", "type": "lab" },
+  
+        { "start": "2026-03-07T11:00:00-08:00", "end": "2026-03-07T12:00:00-08:00", "title": "Brunch", "type": "meal" },
+        { "start": "2026-03-07T15:00:00-08:00", "end": "2026-03-07T17:00:00-08:00", "title": "Study Group", "type": "study" },
+  
+        { "start": "2026-03-08T12:00:00-08:00", "end": "2026-03-08T13:00:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-08T16:00:00-08:00", "end": "2026-03-08T18:00:00-08:00", "title": "Homework Block", "type": "study" }
+      ],
+      "preferences": {
+        "workHours": { "start": "08:30", "end": "21:00" },
+        "meetingLengthMinutes": 30,
+        "bufferMinutes": 10,
+        "avoidDays": ["Sunday"],
+        "preferredStudyBlocks": ["late_morning", "afternoon"]
+      },
+      "request": {
+        "task": "find_available_slots",
+        "durationMinutes": 45,
+        "window": {
+          "start": "2026-03-04T09:00:00-08:00",
+          "end": "2026-03-04T18:00:00-08:00"
+        }
+      }
+    },
+    {
+      "studentProfile": {
+        "id": "berkeley_student_002",
+        "major": "Molecular and Cell Biology",
+        "year": "Junior"
+      },
+      "timezone": "America/Los_Angeles",
+      "range": {
+        "start": "2026-03-02T00:00:00-08:00",
+        "end": "2026-03-09T00:00:00-08:00"
+      },
+      "busy": [
+        { "start": "2026-03-02T08:00:00-08:00", "end": "2026-03-02T09:30:00-08:00", "title": "Chem 3A Lecture", "type": "class" },
+        { "start": "2026-03-02T10:00:00-08:00", "end": "2026-03-02T11:00:00-08:00", "title": "Bio 1B Lecture", "type": "class" },
+        { "start": "2026-03-02T12:00:00-08:00", "end": "2026-03-02T12:45:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-02T13:00:00-08:00", "end": "2026-03-02T14:00:00-08:00", "title": "Public Health 101 Lecture", "type": "class" },
+  
+        { "start": "2026-03-03T09:00:00-08:00", "end": "2026-03-03T10:00:00-08:00", "title": "MCB Research Lab Meeting", "type": "research" },
+        { "start": "2026-03-03T11:00:00-08:00", "end": "2026-03-03T12:00:00-08:00", "title": "Bio 1B Discussion", "type": "discussion" },
+        { "start": "2026-03-03T12:15:00-08:00", "end": "2026-03-03T13:00:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-03T14:00:00-08:00", "end": "2026-03-03T17:00:00-08:00", "title": "Chem 3A Lab", "type": "lab" },
+  
+        { "start": "2026-03-04T08:00:00-08:00", "end": "2026-03-04T09:30:00-08:00", "title": "Chem 3A Lecture", "type": "class" },
+        { "start": "2026-03-04T10:00:00-08:00", "end": "2026-03-04T11:00:00-08:00", "title": "Bio 1B Lecture", "type": "class" },
+        { "start": "2026-03-04T12:00:00-08:00", "end": "2026-03-04T12:45:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-04T13:00:00-08:00", "end": "2026-03-04T14:00:00-08:00", "title": "Public Health 101 Lecture", "type": "class" },
+  
+        { "start": "2026-03-05T09:30:00-08:00", "end": "2026-03-05T10:30:00-08:00", "title": "Statistics 2 Discussion", "type": "discussion" },
+        { "start": "2026-03-05T11:00:00-08:00", "end": "2026-03-05T12:00:00-08:00", "title": "Statistics 2 Lecture", "type": "class" },
+        { "start": "2026-03-05T12:00:00-08:00", "end": "2026-03-05T12:45:00-08:00", "title": "Lunch", "type": "meal" },
+  
+        { "start": "2026-03-06T10:30:00-08:00", "end": "2026-03-06T11:00:00-08:00", "title": "PI One-on-One", "type": "research" },
+        { "start": "2026-03-06T12:00:00-08:00", "end": "2026-03-06T12:45:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-06T15:00:00-08:00", "end": "2026-03-06T16:00:00-08:00", "title": "Pre-med Advising", "type": "meeting" },
+  
+        { "start": "2026-03-07T10:30:00-08:00", "end": "2026-03-07T11:30:00-08:00", "title": "Brunch", "type": "meal" },
+        { "start": "2026-03-07T13:00:00-08:00", "end": "2026-03-07T15:30:00-08:00", "title": "Library Study Session", "type": "study" },
+  
+        { "start": "2026-03-08T12:00:00-08:00", "end": "2026-03-08T13:00:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-08T14:00:00-08:00", "end": "2026-03-08T17:00:00-08:00", "title": "Problem Set Block", "type": "study" }
+      ],
+      "preferences": {
+        "workHours": { "start": "08:00", "end": "20:00" },
+        "meetingLengthMinutes": 30,
+        "bufferMinutes": 15,
+        "avoidDays": ["Saturday evening", "Sunday evening"],
+        "preferredStudyBlocks": ["afternoon", "early_evening"]
+      },
+      "request": {
+        "task": "find_available_slots",
+        "durationMinutes": 60,
+        "window": {
+          "start": "2026-03-05T09:00:00-08:00",
+          "end": "2026-03-05T18:00:00-08:00"
+        }
+      }
+    },
+    {
+      "studentProfile": {
+        "id": "berkeley_student_003",
+        "major": "Applied Mathematics",
+        "year": "Senior"
+      },
+      "timezone": "America/Los_Angeles",
+      "range": {
+        "start": "2026-03-02T00:00:00-08:00",
+        "end": "2026-03-09T00:00:00-08:00"
+      },
+      "busy": [
+        { "start": "2026-03-02T09:30:00-08:00", "end": "2026-03-02T11:00:00-08:00", "title": "Math 110 Lecture", "type": "class" },
+        { "start": "2026-03-02T11:00:00-08:00", "end": "2026-03-02T12:00:00-08:00", "title": "Physics 7B Lecture", "type": "class" },
+        { "start": "2026-03-02T12:15:00-08:00", "end": "2026-03-02T13:00:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-02T14:00:00-08:00", "end": "2026-03-02T15:30:00-08:00", "title": "CS 70 Lecture", "type": "class" },
+  
+        { "start": "2026-03-03T10:00:00-08:00", "end": "2026-03-03T11:00:00-08:00", "title": "Stat 134 Lecture", "type": "class" },
+        { "start": "2026-03-03T12:00:00-08:00", "end": "2026-03-03T12:45:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-03T13:00:00-08:00", "end": "2026-03-03T14:00:00-08:00", "title": "Math 110 Discussion", "type": "discussion" },
+        { "start": "2026-03-03T15:00:00-08:00", "end": "2026-03-03T15:30:00-08:00", "title": "Applied Math Research Check-in", "type": "research" },
+  
+        { "start": "2026-03-04T09:30:00-08:00", "end": "2026-03-04T11:00:00-08:00", "title": "Math 110 Lecture", "type": "class" },
+        { "start": "2026-03-04T11:00:00-08:00", "end": "2026-03-04T12:00:00-08:00", "title": "Physics 7B Lecture", "type": "class" },
+        { "start": "2026-03-04T12:15:00-08:00", "end": "2026-03-04T13:00:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-04T14:00:00-08:00", "end": "2026-03-04T15:30:00-08:00", "title": "CS 70 Lecture", "type": "class" },
+  
+        { "start": "2026-03-05T10:00:00-08:00", "end": "2026-03-05T11:00:00-08:00", "title": "Stat 134 Lecture", "type": "class" },
+        { "start": "2026-03-05T11:30:00-08:00", "end": "2026-03-05T12:30:00-08:00", "title": "Physics 7B Discussion", "type": "discussion" },
+        { "start": "2026-03-05T12:30:00-08:00", "end": "2026-03-05T13:15:00-08:00", "title": "Lunch", "type": "meal" },
+  
+        { "start": "2026-03-06T09:00:00-08:00", "end": "2026-03-06T10:00:00-08:00", "title": "Faculty Office Hour", "type": "meeting" },
+        { "start": "2026-03-06T12:00:00-08:00", "end": "2026-03-06T12:45:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-06T14:00:00-08:00", "end": "2026-03-06T16:00:00-08:00", "title": "Reading Group", "type": "research" },
+  
+        { "start": "2026-03-07T10:00:00-08:00", "end": "2026-03-07T11:00:00-08:00", "title": "Brunch", "type": "meal" },
+        { "start": "2026-03-07T13:00:00-08:00", "end": "2026-03-07T15:00:00-08:00", "title": "Study Group", "type": "study" },
+  
+        { "start": "2026-03-08T12:00:00-08:00", "end": "2026-03-08T13:00:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-08T15:00:00-08:00", "end": "2026-03-08T18:00:00-08:00", "title": "Homework and Review", "type": "study" }
+      ],
+      "preferences": {
+        "workHours": { "start": "09:00", "end": "22:00" },
+        "meetingLengthMinutes": 45,
+        "bufferMinutes": 10,
+        "avoidDays": ["Sunday morning"],
+        "preferredStudyBlocks": ["afternoon", "night"]
+      },
+      "request": {
+        "task": "find_available_slots",
+        "durationMinutes": 90,
+        "window": {
+          "start": "2026-03-03T09:00:00-08:00",
+          "end": "2026-03-03T18:00:00-08:00"
+        }
+      }
+    },
+    {
+      "studentProfile": {
+        "id": "berkeley_student_004",
+        "major": "Physics",
+        "year": "Junior"
+      },
+      "timezone": "America/Los_Angeles",
+      "range": {
+        "start": "2026-03-02T00:00:00-08:00",
+        "end": "2026-03-09T00:00:00-08:00"
+      },
+      "busy": [
+        { "start": "2026-03-02T10:00:00-08:00", "end": "2026-03-02T11:30:00-08:00", "title": "Physics 137A Lecture", "type": "class" },
+        { "start": "2026-03-02T12:00:00-08:00", "end": "2026-03-02T13:00:00-08:00", "title": "Astronomy C10 Lecture", "type": "class" },
+        { "start": "2026-03-02T13:00:00-08:00", "end": "2026-03-02T13:45:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-02T14:00:00-08:00", "end": "2026-03-02T15:00:00-08:00", "title": "Math 53 Lecture", "type": "class" },
+  
+        { "start": "2026-03-03T09:00:00-08:00", "end": "2026-03-03T10:00:00-08:00", "title": "Astrophysics Research Meeting", "type": "research" },
+        { "start": "2026-03-03T11:00:00-08:00", "end": "2026-03-03T12:00:00-08:00", "title": "CS 61B Discussion", "type": "discussion" },
+        { "start": "2026-03-03T12:15:00-08:00", "end": "2026-03-03T13:00:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-03T15:00:00-08:00", "end": "2026-03-03T17:00:00-08:00", "title": "Physics Lab", "type": "lab" },
+  
+        { "start": "2026-03-04T10:00:00-08:00", "end": "2026-03-04T11:30:00-08:00", "title": "Physics 137A Lecture", "type": "class" },
+        { "start": "2026-03-04T12:00:00-08:00", "end": "2026-03-04T13:00:00-08:00", "title": "Astronomy C10 Lecture", "type": "class" },
+        { "start": "2026-03-04T13:00:00-08:00", "end": "2026-03-04T13:45:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-04T14:00:00-08:00", "end": "2026-03-04T15:00:00-08:00", "title": "Math 53 Lecture", "type": "class" },
+  
+        { "start": "2026-03-05T11:00:00-08:00", "end": "2026-03-05T12:30:00-08:00", "title": "CS 61B Lecture", "type": "class" },
+        { "start": "2026-03-05T12:30:00-08:00", "end": "2026-03-05T13:15:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-05T15:30:00-08:00", "end": "2026-03-05T16:00:00-08:00", "title": "Professor Office Hour", "type": "meeting" },
+  
+        { "start": "2026-03-06T10:00:00-08:00", "end": "2026-03-06T10:30:00-08:00", "title": "Short Research Sync", "type": "research" },
+        { "start": "2026-03-06T12:00:00-08:00", "end": "2026-03-06T12:45:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-06T14:00:00-08:00", "end": "2026-03-06T16:00:00-08:00", "title": "Problem Solving Session", "type": "study" },
+  
+        { "start": "2026-03-07T11:00:00-08:00", "end": "2026-03-07T12:00:00-08:00", "title": "Brunch", "type": "meal" },
+        { "start": "2026-03-07T19:00:00-08:00", "end": "2026-03-07T21:00:00-08:00", "title": "Observatory Event", "type": "club" },
+  
+        { "start": "2026-03-08T12:00:00-08:00", "end": "2026-03-08T13:00:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-08T16:00:00-08:00", "end": "2026-03-08T18:00:00-08:00", "title": "Lab Write-up Block", "type": "study" }
+      ],
+      "preferences": {
+        "workHours": { "start": "09:00", "end": "21:30" },
+        "meetingLengthMinutes": 30,
+        "bufferMinutes": 10,
+        "avoidDays": ["Sunday evening"],
+        "preferredStudyBlocks": ["late_afternoon", "evening"]
+      },
+      "request": {
+        "task": "find_available_slots",
+        "durationMinutes": 60,
+        "window": {
+          "start": "2026-03-06T09:00:00-08:00",
+          "end": "2026-03-06T18:00:00-08:00"
+        }
+      }
+    },
+    {
+      "studentProfile": {
+        "id": "berkeley_student_005",
+        "major": "Business and Economics",
+        "year": "Sophomore"
+      },
+      "timezone": "America/Los_Angeles",
+      "range": {
+        "start": "2026-03-02T00:00:00-08:00",
+        "end": "2026-03-09T00:00:00-08:00"
+      },
+      "busy": [
+        { "start": "2026-03-02T09:00:00-08:00", "end": "2026-03-02T10:30:00-08:00", "title": "UGBA 10 Lecture", "type": "class" },
+        { "start": "2026-03-02T11:00:00-08:00", "end": "2026-03-02T12:00:00-08:00", "title": "Econ 100A Lecture", "type": "class" },
+        { "start": "2026-03-02T12:15:00-08:00", "end": "2026-03-02T13:00:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-02T13:00:00-08:00", "end": "2026-03-02T14:30:00-08:00", "title": "Data C8 Lecture", "type": "class" },
+  
+        { "start": "2026-03-03T10:00:00-08:00", "end": "2026-03-03T11:00:00-08:00", "title": "Startup Research Meeting", "type": "research" },
+        { "start": "2026-03-03T12:00:00-08:00", "end": "2026-03-03T12:45:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-03T13:00:00-08:00", "end": "2026-03-03T14:00:00-08:00", "title": "Econ 100A Discussion", "type": "discussion" },
+        { "start": "2026-03-03T15:30:00-08:00", "end": "2026-03-03T16:30:00-08:00", "title": "Sociology 1 Lecture", "type": "class" },
+  
+        { "start": "2026-03-04T09:00:00-08:00", "end": "2026-03-04T10:30:00-08:00", "title": "UGBA 10 Lecture", "type": "class" },
+        { "start": "2026-03-04T11:00:00-08:00", "end": "2026-03-04T12:00:00-08:00", "title": "Econ 100A Lecture", "type": "class" },
+        { "start": "2026-03-04T12:15:00-08:00", "end": "2026-03-04T13:00:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-04T13:00:00-08:00", "end": "2026-03-04T14:30:00-08:00", "title": "Data C8 Lecture", "type": "class" },
+  
+        { "start": "2026-03-05T11:00:00-08:00", "end": "2026-03-05T12:00:00-08:00", "title": "Data C8 Discussion", "type": "discussion" },
+        { "start": "2026-03-05T12:15:00-08:00", "end": "2026-03-05T13:00:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-05T15:30:00-08:00", "end": "2026-03-05T16:30:00-08:00", "title": "Sociology 1 Lecture", "type": "class" },
+  
+        { "start": "2026-03-06T09:30:00-08:00", "end": "2026-03-06T10:00:00-08:00", "title": "Short Research Check-in", "type": "research" },
+        { "start": "2026-03-06T12:00:00-08:00", "end": "2026-03-06T12:45:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-06T14:00:00-08:00", "end": "2026-03-06T16:00:00-08:00", "title": "Case Interview Practice", "type": "career" },
+  
+        { "start": "2026-03-07T10:30:00-08:00", "end": "2026-03-07T11:30:00-08:00", "title": "Brunch", "type": "meal" },
+        { "start": "2026-03-07T13:00:00-08:00", "end": "2026-03-07T15:00:00-08:00", "title": "Group Project Meeting", "type": "meeting" },
+  
+        { "start": "2026-03-08T12:00:00-08:00", "end": "2026-03-08T13:00:00-08:00", "title": "Lunch", "type": "meal" },
+        { "start": "2026-03-08T15:00:00-08:00", "end": "2026-03-08T17:30:00-08:00", "title": "Reading and Assignments", "type": "study" }
+      ],
+      "preferences": {
+        "workHours": { "start": "08:30", "end": "20:30" },
+        "meetingLengthMinutes": 30,
+        "bufferMinutes": 10,
+        "avoidDays": ["Saturday night"],
+        "preferredStudyBlocks": ["morning", "afternoon"]
+      },
+      "request": {
+        "task": "find_available_slots",
+        "durationMinutes": 45,
+        "window": {
+          "start": "2026-03-03T09:00:00-08:00",
+          "end": "2026-03-03T18:00:00-08:00"
+        }
+      }
+    }
+  ]

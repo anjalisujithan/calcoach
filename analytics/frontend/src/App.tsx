@@ -1,16 +1,15 @@
 import { useState } from 'react';
 import CalendarTab from './components/CalendarTab';
-import DiaryTab from './components/DiaryTab';
 import AnalyticsTab from './components/AnalyticsTab';
 import { ReflectionEntry } from './components/ReflectionPanel';
 import './App.css';
 
-type Tab = 'calendar' | 'diary' | 'analytics';
+type Tab = 'calendar' | 'analytics';
 
 let idCounter = 0;
 const mkId = () => String(++idCounter);
 
-const API = 'http://localhost:8000';
+const API = 'http://localhost:8001';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('calendar');
@@ -41,7 +40,7 @@ export default function App() {
           <h1 className="app-title">CalCoach 🐻 📅</h1>
         </div>
         <nav className="tab-nav">
-          {(['calendar', 'diary', 'analytics'] as Tab[]).map(tab => (
+          {(['calendar', 'analytics'] as Tab[]).map(tab => (
             <button
               key={tab}
               className={`tab-btn ${activeTab === tab ? 'active' : ''}`}
@@ -53,10 +52,7 @@ export default function App() {
         </nav>
       </header>
       <main className="app-main">
-        {activeTab === 'calendar' && <CalendarTab />}
-        {activeTab === 'diary' && (
-          <DiaryTab reflections={reflections} onSaveReflection={handleSaveReflection} />
-        )}
+        {activeTab === 'calendar' && <CalendarTab reflections={reflections} onSaveReflection={handleSaveReflection} />}
         {activeTab === 'analytics' && <AnalyticsTab reflections={reflections} />}
       </main>
     </div>
