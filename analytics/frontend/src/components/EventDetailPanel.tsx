@@ -86,8 +86,7 @@ export default function EventDetailPanel({ session, reflections, onClose, onSave
       color,
       recurrence: session.recurrence,
     });
-    setEditSaved(true);
-    setTimeout(() => setEditSaved(false), 2000);
+    onClose();
   }
 
   function handleSaveReflection() {

@@ -21,6 +21,7 @@ interface Props {
   onSelectSession?: (id: string) => void;
   onAddSession?: (s: Omit<Session, 'id'>) => void;
   onEditSession?: (id: string, s: Omit<Session, 'id'>) => void;
+  onDeleteSession?: (id: string) => void;
   categories?: string[];
   onAddCategory?: (cat: string) => void;
   onDeleteCategory?: (cat: string) => void;
@@ -78,7 +79,6 @@ function computeOverlapLayout(sessions: Session[]): Map<string, { col: number; t
   const result = new Map<string, { col: number; totalCols: number }>();
   if (sessions.length === 0) return result;
 
-  // Sort by start time
   const sorted = [...sessions].sort((a, b) =>
     (a.startHour * 60 + a.startMin) - (b.startHour * 60 + b.startMin)
   );
@@ -87,7 +87,6 @@ function computeOverlapLayout(sessions: Session[]): Map<string, { col: number; t
   const endOf   = (s: Session) => startOf(s) + s.durationMins;
   const overlaps = (a: Session, b: Session) => startOf(a) < endOf(b) && startOf(b) < endOf(a);
 
-  // Group into clusters of mutually-overlapping sessions
   const clusters: Session[][] = [];
   for (const s of sorted) {
     const cluster = clusters.find(c => c.some(cs => overlaps(cs, s)));
@@ -96,7 +95,6 @@ function computeOverlapLayout(sessions: Session[]): Map<string, { col: number; t
   }
 
   for (const cluster of clusters) {
-    // Greedy column assignment
     const cols: number[] = [];
     for (const s of cluster) {
       const taken = cluster
@@ -105,7 +103,7 @@ function computeOverlapLayout(sessions: Session[]): Map<string, { col: number; t
       let col = 0;
       while (taken.includes(col)) col++;
       cols.push(col);
-      result.set(s.id, { col, totalCols: 1 }); // totalCols filled in below
+      result.set(s.id, { col, totalCols: 1 });
     }
     const totalCols = Math.max(...cols) + 1;
     for (const s of cluster) {
@@ -118,7 +116,7 @@ function computeOverlapLayout(sessions: Session[]): Map<string, { col: number; t
 
 /** Snap raw pixel-offset (= minutes from midnight) to nearest 30-min boundary */
 function snapTo30(rawY: number): { hour: number; min: number } {
-  const totalMins = rawY; // 60px === 60 mins
+  const totalMins = rawY;
   const snapped = Math.round(totalMins / 30) * 30;
   const hour = Math.min(23, Math.floor(snapped / 60));
   const min = snapped % 60 === 60 ? 0 : snapped % 60;
@@ -129,15 +127,44 @@ function fmtTime(hour: number, min: number) {
   return `${hour % 12 || 12}:${String(min).padStart(2, '0')} ${hour < 12 ? 'AM' : 'PM'}`;
 }
 
-export default function WeekCalendar({ sessions = [], selectedSession, onSelectSession, onAddSession, onEditSession, categories = [], onAddCategory, onDeleteCategory, toolbarExtra }: Props) {
+interface DragState {
+  session: Session;
+  offsetMins: number;
+  currentDay: number;
+  currentHour: number;
+  currentMin: number;
+}
+
+interface DragGhost {
+  sessionId: string;
+  dayIndex: number;
+  hour: number;
+  min: number;
+  durationMins: number;
+  color: string;
+  title: string;
+}
+
+export default function WeekCalendar({ sessions = [], selectedSession, onSelectSession, onAddSession, onEditSession, onDeleteSession, categories = [], onAddCategory, onDeleteCategory, toolbarExtra }: Props) {
   const [weekStart, setWeekStart] = useState(() =>
     startOfWeek(new Date(), { weekStartsOn: 0 })
   );
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({ ...DEFAULT_FORM });
-  // Ref for the scrollable grid — used to set initial 8 AM scroll
+  const [dragGhost, setDragGhost] = useState<DragGhost | null>(null);
+
   const weekGridRef = useRef<HTMLDivElement>(null);
+  const weekBodyRef = useRef<HTMLDivElement>(null);
+  const gutterRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<DragState | null>(null);
+  const didDragRef = useRef(false);
+  // Stable refs so event listeners don't go stale
+  const weekStartRef = useRef(weekStart);
+  const onEditSessionRef = useRef(onEditSession);
+
+  useEffect(() => { weekStartRef.current = weekStart; }, [weekStart]);
+  useEffect(() => { onEditSessionRef.current = onEditSession; }, [onEditSession]);
 
   useEffect(() => {
     if (weekGridRef.current) {
@@ -145,11 +172,66 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
     }
   }, []);
 
+  // Attach drag tracking to document once — avoids mouse leaving the grid
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      if (!dragRef.current || !weekBodyRef.current) return;
+      didDragRef.current = true;
+      const bodyRect = weekBodyRef.current.getBoundingClientRect();
+      const gutterWidth = gutterRef.current?.offsetWidth ?? 56;
+      const relX = e.clientX - bodyRect.left - gutterWidth;
+      const colWidth = (bodyRect.width - gutterWidth) / 7;
+      const dayIndex = Math.max(0, Math.min(6, Math.floor(relX / colWidth)));
+      // getBoundingClientRect already accounts for scroll, so no scrollTop needed
+      const relY = e.clientY - bodyRect.top;
+      const rawMins = Math.max(0, relY - dragRef.current.offsetMins);
+      const { hour, min } = snapTo30(rawMins);
+      const clampedHour = Math.min(23, hour);
+      dragRef.current.currentDay = dayIndex;
+      dragRef.current.currentHour = clampedHour;
+      dragRef.current.currentMin = min;
+      setDragGhost(g => g ? { ...g, dayIndex, hour: clampedHour, min } : null);
+      document.body.style.cursor = 'grabbing';
+      document.body.style.userSelect = 'none';
+    }
+
+    function onUp() {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (!dragRef.current) return;
+      const { session, currentDay, currentHour, currentMin } = dragRef.current;
+      dragRef.current = null;
+      setDragGhost(null);
+      if (!didDragRef.current) return;
+      // Only save if position actually changed
+      if (
+        currentDay !== session.dayIndex ||
+        currentHour !== session.startHour ||
+        currentMin !== session.startMin
+      ) {
+        const date = format(addDays(weekStartRef.current, currentDay), 'yyyy-MM-dd');
+        onEditSessionRef.current?.(session.id, {
+          ...session,
+          date,
+          dayIndex: currentDay,
+          startHour: currentHour,
+          startMin: currentMin,
+        });
+      }
+    }
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
   const today = new Date();
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
   const weekLabel = `${format(weekStart, 'MMMM d')} – ${format(addDays(weekStart, 6), 'd, yyyy')}`;
 
-  // Ghost block: derived live from form so it updates as the user edits any field
   const ghostStartParts = form.startTime.split(':').map(Number);
   const ghostDuration = Math.max(15, diffMins(form.startTime, form.endTime) || 60);
   const ghost = showModal
@@ -163,6 +245,7 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
     : null;
 
   function handleColumnClick(e: React.MouseEvent<HTMLDivElement>, colIdx: number) {
+    if (didDragRef.current) { didDragRef.current = false; return; }
     const rect = e.currentTarget.getBoundingClientRect();
     const rawY = e.clientY - rect.top;
     const { hour, min } = snapTo30(rawY);
@@ -174,7 +257,33 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
 
   function handleSessionClick(e: React.MouseEvent, s: Session) {
     e.stopPropagation();
+    if (didDragRef.current) { didDragRef.current = false; return; }
     onSelectSession?.(s.id);
+  }
+
+  function handleDragStart(e: React.MouseEvent, s: Session) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    didDragRef.current = false;
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const offsetMins = e.clientY - rect.top;
+    dragRef.current = {
+      session: s,
+      offsetMins,
+      currentDay: s.dayIndex,
+      currentHour: s.startHour,
+      currentMin: s.startMin,
+    };
+    setDragGhost({
+      sessionId: s.id,
+      dayIndex: s.dayIndex,
+      hour: s.startHour,
+      min: s.startMin,
+      durationMins: s.durationMins,
+      color: s.color,
+      title: s.title,
+    });
   }
 
   function handleSave() {
@@ -239,9 +348,9 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
         </div>
 
         {/* body */}
-        <div className="week-body">
+        <div className="week-body" ref={weekBodyRef}>
           {/* time gutter */}
-          <div className="time-gutter">
+          <div className="time-gutter" ref={gutterRef}>
             {HOURS.map(h => (
               <div key={h} className="time-label">
                 {h === 0 ? '' : `${h % 12 || 12} ${h < 12 ? 'AM' : 'PM'}`}
@@ -260,7 +369,7 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
                 <div key={h} className="hour-line" style={{ top: h * 60, pointerEvents: 'none' }} />
               ))}
 
-              {/* Ghost block — live preview while modal is open */}
+              {/* Ghost block — live preview while add-session modal is open */}
               {ghost && ghost.dayIndex === colIdx && (
                 <div
                   className="session-block session-ghost"
@@ -276,6 +385,23 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
                 </div>
               )}
 
+              {/* Drag ghost — preview while dragging an existing session */}
+              {dragGhost && dragGhost.dayIndex === colIdx && (
+                <div
+                  className="session-block session-ghost"
+                  style={{
+                    top: dragGhost.hour * 60 + dragGhost.min,
+                    height: Math.max(dragGhost.durationMins, 22),
+                    background: dragGhost.color,
+                    opacity: 0.75,
+                    pointerEvents: 'none',
+                  }}
+                >
+                  <div className="session-title">{dragGhost.title}</div>
+                  <div className="session-time">{fmtTime(dragGhost.hour, dragGhost.min)}</div>
+                </div>
+              )}
+
               {/* Confirmed sessions */}
               {(() => {
                 const daySessions = sessions.filter(
@@ -286,6 +412,7 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
                   const { col, totalCols } = layout.get(s.id) ?? { col: 0, totalCols: 1 };
                   const width = `calc(${100 / totalCols}% - ${totalCols > 1 ? '2px' : '0px'})`;
                   const left = `${(col / totalCols) * 100}%`;
+                  const isDragging = dragGhost?.sessionId === s.id;
                   return (
                     <div
                       key={s.id}
@@ -296,13 +423,22 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
                         background: s.color,
                         width,
                         left,
-                        opacity: totalCols > 1 ? 0.92 : 1,
+                        opacity: isDragging ? 0.3 : (totalCols > 1 ? 0.92 : 1),
                         boxShadow: totalCols > 1 ? '2px 0 0 rgba(0,0,0,0.15)' : undefined,
+                        cursor: isDragging ? 'grabbing' : 'grab',
                       }}
+                      onMouseDown={e => handleDragStart(e, s)}
                       onClick={e => handleSessionClick(e, s)}
                     >
                       <div className="session-title">{s.title}</div>
                       <div className="session-time">{fmtTime(s.startHour, s.startMin)}</div>
+                      {onDeleteSession && (
+                        <button
+                          className="session-delete-btn"
+                          title="Delete event"
+                          onClick={e => { e.stopPropagation(); onDeleteSession(s.id); }}
+                        >✕</button>
+                      )}
                     </div>
                   );
                 });

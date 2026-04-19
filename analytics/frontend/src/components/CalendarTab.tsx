@@ -14,7 +14,7 @@ const INITIAL_MESSAGES: Message[] = [
   {
     id: mkId(),
     role: 'assistant',
-    text: "Hi! I'm CalCoach. Share your tasks and goals and I'll help generate an optimized schedule for your week.",
+    text: "Hi! I'm CalCoach. Share your tasks and goals and I'll help generate an optimized schedule for your week or answer your questions!",
   },
 ];
 
@@ -82,6 +82,7 @@ function loadCategories(): string[] {
 
 export default function CalendarTab({ reflections, onSaveReflection }: Props) {
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
+  const [chatHistory, setChatHistory] = useState<{ role: string; text: string }[]>([]);
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -160,6 +161,7 @@ export default function CalendarTab({ reflections, onSaveReflection }: Props) {
   }, [authenticated]);
 
   async function handleEditSession(id: string, s: Omit<Session, 'id'>) {
+    setSessions(prev => prev.map(existing => existing.id === id ? { ...s, id } : existing));
     try {
       await fetch(`${CALENDAR_API}/calendar/events/${id}`, {
         method: 'PATCH',
@@ -168,7 +170,6 @@ export default function CalendarTab({ reflections, onSaveReflection }: Props) {
         body: JSON.stringify(sessionToPayload(s)),
       });
     } catch { /* optimistic */ }
-    setSessions(prev => prev.map(existing => existing.id === id ? { ...s, id } : existing));
   }
 
   async function handleAddSession(s: Omit<Session, 'id'>) {
@@ -200,14 +201,66 @@ export default function CalendarTab({ reflections, onSaveReflection }: Props) {
     setSelectedSessionId(null);
   }
 
-  function handleSend(text: string) {
+  async function handleSend(text: string) {
     const userMsg: Message = { id: mkId(), role: 'user', text };
-    const botMsg: Message = {
-      id: mkId(),
-      role: 'assistant',
-      text: "[Placeholder Message]: Of course! I have scheduled a lunch for Chris on Wednesday, April 8 from 1-2pm. Let me know if that works :)",
-    };
-    setMessages(m => [...m, userMsg, botMsg]);
+    const thinkingMsg: Message = { id: mkId(), role: 'assistant', text: '…' };
+    setMessages(m => [...m, userMsg, thinkingMsg]);
+
+    try {
+      const res = await fetch(`${ANALYTICS_API}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: text,
+          history: chatHistory,
+          sessions: sessions.map(({ title, date, startHour, startMin, durationMins }) => ({
+            title, date, startHour, startMin, durationMins,
+          })),
+          reflections: reflections.map(({ title, date, startTime, endTime, productivity, reflectionText }) => ({
+            title, date, startTime, endTime, productivity, reflectionText,
+          })),
+        }),
+      });
+      const data = await res.json();
+      const reply = data.reply ?? 'Sorry, something went wrong.';
+      setMessages(m => m.map(msg => msg.id === thinkingMsg.id ? { ...msg, text: reply } : msg));
+      if (data.updated_history) setChatHistory(data.updated_history);
+
+      const newEvents = data.events_to_create ?? [];
+      if (newEvents.length > 0) {
+        // Collect IDs of existing sessions that conflict with any incoming event
+        const conflictIds = new Set<string>();
+        for (const event of newEvents) {
+          const newStart = event.startHour * 60 + event.startMin;
+          const newEnd = newStart + event.durationMins;
+          for (const s of sessions) {
+            if (s.date !== event.date) continue;
+            const sStart = s.startHour * 60 + s.startMin;
+            const sEnd = sStart + s.durationMins;
+            if (newStart < sEnd && newEnd > sStart) conflictIds.add(s.id);
+          }
+        }
+        // Delete conflicting events first
+        for (const id of Array.from(conflictIds)) {
+          await handleDeleteSession(id);
+        }
+        // Add the new events
+        for (const event of newEvents) {
+          await handleAddSession({
+            title: event.title,
+            description: event.description ?? '',
+            date: event.date,
+            dayIndex: new Date(event.date + 'T00:00:00').getDay(),
+            startHour: event.startHour,
+            startMin: event.startMin,
+            durationMins: event.durationMins,
+            color: '#4285f4',
+          });
+        }
+      }
+    } catch {
+      setMessages(m => m.map(msg => msg.id === thinkingMsg.id ? { ...msg, text: 'Error reaching CalCoach backend.' } : msg));
+    }
   }
 
   if (authenticated === null) {
@@ -264,6 +317,7 @@ export default function CalendarTab({ reflections, onSaveReflection }: Props) {
         onSelectSession={setSelectedSessionId}
         onAddSession={handleAddSession}
         onEditSession={handleEditSession}
+        onDeleteSession={handleDeleteSession}
         categories={categories}
         onAddCategory={handleAddCategory}
         onDeleteCategory={handleDeleteCategory}
