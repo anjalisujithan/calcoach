@@ -1,3 +1,4 @@
+.vscode/
 serviceAccount.json
 *firebase-adminsdk*.json
 *.json.key

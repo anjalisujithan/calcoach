@@ -96,8 +96,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
       recurrence: session.recurrence,
       category: category || undefined,
     });
-    setEditSaved(true);
-    setTimeout(() => setEditSaved(false), 2000);
+    onClose();
   }
 
   function handleSaveReflection() {
