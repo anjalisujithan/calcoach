@@ -159,6 +159,34 @@ async def list_users():
     return out
 
 
+class UserRegisterIn(BaseModel):
+    email: str
+    display_name: str = ""
+
+
+@app.post("/users/register", status_code=201)
+async def register_user(body: UserRegisterIn):
+    """Create a student document on first signup (idempotent — no-op if already exists)."""
+    email = body.email.strip().lower()
+    if not email:
+        raise HTTPException(400, "email is required")
+
+    db = get_db()
+    doc_ref = db.collection(USERS_COLLECTION).document(email)
+    existing = await doc_ref.get()
+    if existing.exists:
+        return {"created": False, "data": existing.to_dict()}
+
+    now = datetime.now(timezone.utc).isoformat() + "Z"
+    user = {
+        "email": email,
+        "user_summary": None,
+        "created_at": now,
+    }
+    await doc_ref.set(user)
+    return {"created": True, "data": user}
+
+
 @app.post("/users/seed", response_model=List[UserOut])
 async def seed_dummy_users():
     db = get_db()
