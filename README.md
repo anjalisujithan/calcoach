@@ -4,6 +4,9 @@ Ever feel like you literally cannot for the life of you remember what you spent 
 
 We start with students, but we believe this is a more generalizable problem to all working adults who want to effectively manage their life for maximum time management capabilities.
 
+## Running Locally
+To run the Integrated frontend and backend locally, just run `./start.sh` from the repo root.
+
 ## Claude Scheduling Pipeline
 
 Run the sample schedule set through Claude and log structured JSON suggestions.
