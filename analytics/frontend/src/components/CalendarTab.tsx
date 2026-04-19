@@ -107,6 +107,10 @@ export default function CalendarTab({ reflections, onSaveReflection }: Props) {
   }
 
   const localIds = useRef<Set<string>>(new Set());
+  /** groupId → { slotIndex, events[] } for /feedback + multi-block GCal create */
+  const pendingSlotMap = useRef<Map<string, { slotIndex: number; events: any[] }>>(new Map());
+  /** pending block session id → groupId */
+  const pendingSessionToGroup = useRef<Map<string, string>>(new Map());
 
   const selectedSession = sessions.find(s => s.id === selectedSessionId) ?? null;
 
@@ -226,25 +230,46 @@ export default function CalendarTab({ reflections, onSaveReflection }: Props) {
       setMessages(m => m.map(msg => msg.id === thinkingMsg.id ? { ...msg, text: reply } : msg));
       if (data.updated_history) setChatHistory(data.updated_history);
 
+      // Handle ranked suggestions as pending (grayed-out) calendar events
+      const suggestions: any[] = data.pending_suggestions ?? [];
+      if (suggestions.length > 0) {
+        pendingSlotMap.current.clear();
+        pendingSessionToGroup.current.clear();
+
+        const toAdd: Session[] = [];
+        for (const suggestion of suggestions) {
+          const events: any[] =
+            Array.isArray(suggestion.calendar_blocks) && suggestion.calendar_blocks.length > 0
+              ? suggestion.calendar_blocks
+              : [suggestion.slot];
+          const groupId = mkId();
+          pendingSlotMap.current.set(groupId, { slotIndex: suggestion.rank - 1, events });
+
+          events.forEach((event: any, i: number) => {
+            const pendingId = mkId();
+            pendingSessionToGroup.current.set(pendingId, groupId);
+            toAdd.push({
+              id: pendingId,
+              title: `#${suggestion.rank} ${event.title ?? ''}`,
+              description: event.description ?? '',
+              date: event.date,
+              dayIndex: new Date(event.date + 'T00:00:00').getDay(),
+              startHour: event.startHour,
+              startMin: event.startMin,
+              durationMins: event.durationMins,
+              color: '#4285f4',
+              pending: true,
+              pendingGroupId: groupId,
+              pendingShowActions: i === 0,
+            });
+          });
+        }
+        setSessions(prev => [...prev.filter(s => !s.pending), ...toAdd]);
+      }
+
+      // Backwards-compat: direct events_to_create (non-scheduling replies)
       const newEvents = data.events_to_create ?? [];
       if (newEvents.length > 0) {
-        // Collect IDs of existing sessions that conflict with any incoming event
-        const conflictIds = new Set<string>();
-        for (const event of newEvents) {
-          const newStart = event.startHour * 60 + event.startMin;
-          const newEnd = newStart + event.durationMins;
-          for (const s of sessions) {
-            if (s.date !== event.date) continue;
-            const sStart = s.startHour * 60 + s.startMin;
-            const sEnd = sStart + s.durationMins;
-            if (newStart < sEnd && newEnd > sStart) conflictIds.add(s.id);
-          }
-        }
-        // Delete conflicting events first
-        for (const id of Array.from(conflictIds)) {
-          await handleDeleteSession(id);
-        }
-        // Add the new events
         for (const event of newEvents) {
           await handleAddSession({
             title: event.title,
@@ -261,6 +286,104 @@ export default function CalendarTab({ reflections, onSaveReflection }: Props) {
     } catch {
       setMessages(m => m.map(msg => msg.id === thinkingMsg.id ? { ...msg, text: 'Error reaching CalCoach backend.' } : msg));
     }
+  }
+
+  async function handleAcceptSession(id: string) {
+    const groupId = pendingSessionToGroup.current.get(id) ?? id;
+    const info = pendingSlotMap.current.get(groupId);
+    if (!info?.events?.length) return;
+
+    try {
+      await fetch(`${ANALYTICS_API}/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slot_index: info.slotIndex, feedback: 'accepted' }),
+      });
+    } catch { /* non-critical */ }
+
+    const stripRank = (t: string) => t.replace(/^#\d+\s+/, '');
+
+    const newRows: Session[] = [];
+    if (info?.events?.length) {
+      for (const e of info.events) {
+        try {
+          const res = await fetch(`${CALENDAR_API}/calendar/events`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              title: stripRank(e.title ?? ''),
+              description: e.description ?? '',
+              date: e.date,
+              startHour: e.startHour,
+              startMin: e.startMin,
+              durationMins: e.durationMins,
+              recurrence: [],
+            }),
+          });
+          const d = await res.json();
+          const gcalId = d.event?.id ?? mkId();
+          newRows.push({
+            id: gcalId,
+            title: stripRank(e.title ?? ''),
+            description: e.description ?? '',
+            date: e.date,
+            dayIndex: new Date(e.date + 'T00:00:00').getDay(),
+            startHour: e.startHour,
+            startMin: e.startMin,
+            durationMins: e.durationMins,
+            color: '#4285f4',
+          });
+        } catch {
+          const tid = mkId();
+          localIds.current.add(tid);
+          newRows.push({
+            id: tid,
+            title: stripRank(e.title ?? ''),
+            description: e.description ?? '',
+            date: e.date,
+            dayIndex: new Date(e.date + 'T00:00:00').getDay(),
+            startHour: e.startHour,
+            startMin: e.startMin,
+            durationMins: e.durationMins,
+            color: '#4285f4',
+          });
+        }
+      }
+    }
+
+    setSessions(prev => {
+      const withoutPending = prev.filter(s => !s.pending);
+      return [...withoutPending, ...newRows];
+    });
+
+    pendingSlotMap.current.clear();
+    pendingSessionToGroup.current.clear();
+  }
+
+  async function handleRejectSession(id: string) {
+    const groupId = pendingSessionToGroup.current.get(id) ?? id;
+    const info = pendingSlotMap.current.get(groupId);
+    if (info) {
+      try {
+        await fetch(`${ANALYTICS_API}/feedback`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ slot_index: info.slotIndex, feedback: 'rejected' }),
+        });
+      } catch { /* non-critical */ }
+      pendingSlotMap.current.delete(groupId);
+    }
+    Array.from(pendingSessionToGroup.current.keys()).forEach(pid => {
+      if (pendingSessionToGroup.current.get(pid) === groupId) {
+        pendingSessionToGroup.current.delete(pid);
+      }
+    });
+    setSessions(prev => prev.filter(s => {
+      if (!s.pending) return true;
+      const gid = s.pendingGroupId ?? s.id;
+      return gid !== groupId;
+    }));
   }
 
   if (authenticated === null) {
@@ -318,6 +441,8 @@ export default function CalendarTab({ reflections, onSaveReflection }: Props) {
         onAddSession={handleAddSession}
         onEditSession={handleEditSession}
         onDeleteSession={handleDeleteSession}
+        onAcceptSession={handleAcceptSession}
+        onRejectSession={handleRejectSession}
         categories={categories}
         onAddCategory={handleAddCategory}
         onDeleteCategory={handleDeleteCategory}

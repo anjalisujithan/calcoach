@@ -13,6 +13,11 @@ export interface Session {
   color: string;
   recurrence?: string[];  // RRULE strings e.g. ["RRULE:FREQ=WEEKLY;BYDAY=MO"]
   category?: string;
+  pending?: boolean;      // true = AI suggestion awaiting user accept/reject
+  /** All blocks in one ranked option share this id; used with pendingSlotMap on the parent */
+  pendingGroupId?: string;
+  /** If false, this block is part of a multi-slot suggestion — actions live on the first block only */
+  pendingShowActions?: boolean;
 }
 
 interface Props {
@@ -22,6 +27,8 @@ interface Props {
   onAddSession?: (s: Omit<Session, 'id'>) => void;
   onEditSession?: (id: string, s: Omit<Session, 'id'>) => void;
   onDeleteSession?: (id: string) => void;
+  onAcceptSession?: (id: string) => void;
+  onRejectSession?: (id: string) => void;
   categories?: string[];
   onAddCategory?: (cat: string) => void;
   onDeleteCategory?: (cat: string) => void;
@@ -145,7 +152,7 @@ interface DragGhost {
   title: string;
 }
 
-export default function WeekCalendar({ sessions = [], selectedSession, onSelectSession, onAddSession, onEditSession, onDeleteSession, categories = [], onAddCategory, onDeleteCategory, toolbarExtra }: Props) {
+export default function WeekCalendar({ sessions = [], selectedSession, onSelectSession, onAddSession, onEditSession, onDeleteSession, onAcceptSession, onRejectSession, categories = [], onAddCategory, onDeleteCategory, toolbarExtra }: Props) {
   const [weekStart, setWeekStart] = useState(() =>
     startOfWeek(new Date(), { weekStartsOn: 0 })
   );
@@ -402,7 +409,7 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
                 </div>
               )}
 
-              {/* Confirmed sessions */}
+              {/* Sessions (confirmed + pending suggestions) */}
               {(() => {
                 const daySessions = sessions.filter(
                   s => s.dayIndex === colIdx && s.date === format(days[colIdx], 'yyyy-MM-dd')
@@ -413,31 +420,50 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
                   const width = `calc(${100 / totalCols}% - ${totalCols > 1 ? '2px' : '0px'})`;
                   const left = `${(col / totalCols) * 100}%`;
                   const isDragging = dragGhost?.sessionId === s.id;
+                  const isPending = !!s.pending;
+                  const showPendingActions =
+                    isPending && (s.pendingShowActions === undefined || s.pendingShowActions);
                   return (
                     <div
                       key={s.id}
                       className={`session-block ${selectedSession === s.id ? 'selected' : ''}`}
                       style={{
                         top: s.startHour * 60 + s.startMin,
-                        height: Math.max(s.durationMins, 22),
-                        background: s.color,
+                        height: Math.max(s.durationMins, 40),
+                        background: isPending ? '#888' : s.color,
                         width,
                         left,
-                        opacity: isDragging ? 0.3 : (totalCols > 1 ? 0.92 : 1),
+                        opacity: isDragging ? 0.3 : (isPending ? 0.45 : (totalCols > 1 ? 0.92 : 1)),
                         boxShadow: totalCols > 1 ? '2px 0 0 rgba(0,0,0,0.15)' : undefined,
-                        cursor: isDragging ? 'grabbing' : 'grab',
+                        cursor: isPending ? 'default' : (isDragging ? 'grabbing' : 'grab'),
+                        border: isPending ? '2px dashed rgba(0,0,0,0.4)' : undefined,
                       }}
-                      onMouseDown={e => handleDragStart(e, s)}
-                      onClick={e => handleSessionClick(e, s)}
+                      onMouseDown={isPending ? undefined : (e => handleDragStart(e, s))}
+                      onClick={isPending ? undefined : (e => handleSessionClick(e, s))}
                     >
-                      <div className="session-title">{s.title}</div>
+                      <div className="session-title">{isPending ? `💡 ${s.title}` : s.title}</div>
                       <div className="session-time">{fmtTime(s.startHour, s.startMin)}</div>
-                      {onDeleteSession && (
-                        <button
-                          className="session-delete-btn"
-                          title="Delete event"
-                          onClick={e => { e.stopPropagation(); onDeleteSession(s.id); }}
-                        >✕</button>
+                      {showPendingActions ? (
+                        <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
+                          <button
+                            title="Accept suggestion (all blocks)"
+                            onClick={e => { e.stopPropagation(); onAcceptSession?.(s.id); }}
+                            style={{ flex: 1, background: 'rgba(255,255,255,0.85)', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '0.7rem', fontWeight: 700, color: '#1a7a1a', padding: '2px' }}
+                          >✓ Add</button>
+                          <button
+                            title="Dismiss suggestion"
+                            onClick={e => { e.stopPropagation(); onRejectSession?.(s.id); }}
+                            style={{ flex: 1, background: 'rgba(255,255,255,0.85)', border: 'none', borderRadius: '3px', cursor: 'pointer', fontSize: '0.7rem', fontWeight: 700, color: '#a00', padding: '2px' }}
+                          >✕ No</button>
+                        </div>
+                      ) : (
+                        onDeleteSession && (
+                          <button
+                            className="session-delete-btn"
+                            title="Delete event"
+                            onClick={e => { e.stopPropagation(); onDeleteSession(s.id); }}
+                          >✕</button>
+                        )
                       )}
                     </div>
                   );
