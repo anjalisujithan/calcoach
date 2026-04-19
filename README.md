@@ -4,6 +4,16 @@ Ever feel like you literally cannot for the life of you remember what you spent 
 
 We start with students, but we believe this is a more generalizable problem to all working adults who want to effectively manage their life for maximum time management capabilities.
 
+## Setup
+
+### Groq API Key (LLM Backend)
+
+1. Go to [https://console.groq.com/keys](https://console.groq.com/keys) and create an API key.
+2. Create a `.env` file in the repo root (or edit the existing one) and add:
+   ```
+   GROQ_API_KEY='your-groq-api-key'
+   ```
+
 ## Running Locally
 To run the Integrated frontend and backend locally, just run `./start.sh` from the repo root.
 

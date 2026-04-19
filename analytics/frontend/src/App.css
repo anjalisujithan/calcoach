@@ -255,6 +255,30 @@ body {
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.28);
 }
 
+.session-delete-btn {
+  display: none;
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  background: rgba(0, 0, 0, 0.35);
+  border: none;
+  border-radius: 3px;
+  color: #fff;
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.session-block:hover .session-delete-btn {
+  display: block;
+}
+
+.session-delete-btn:hover {
+  background: rgba(234, 67, 53, 0.85);
+}
+
 .session-block.selected {
   outline: 2px solid #1a1a2e;
 }
@@ -484,7 +508,7 @@ body {
 
 .chat-input-row {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 8px;
   border: 1px solid #dadce0;
   border-radius: 24px;
@@ -499,7 +523,8 @@ body {
   font-size: 14px;
   color: #202124;
   background: transparent;
-  max-height: 120px;
+  max-height: 160px;
+  overflow-y: auto;
   line-height: 1.4;
   font-family: inherit;
 }
