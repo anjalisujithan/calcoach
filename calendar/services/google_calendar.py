@@ -1,6 +1,7 @@
 from datetime import datetime, timezone, timedelta
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 
 def get_calendar_service(tokens: dict):
@@ -49,7 +50,13 @@ class GoogleCalendarService:
         return result.get("calendars", {}).get("primary", {}).get("busy", [])
 
     def delete_event(self, event_id: str) -> None:
-        self.service.events().delete(calendarId="primary", eventId=event_id).execute()
+        try:
+            self.service.events().delete(calendarId="primary", eventId=event_id).execute()
+        except HttpError as e:
+            # Already removed (double-delete, sync lag, or other client) — treat as success
+            if getattr(e.resp, "status", None) in (404, 410):
+                return
+            raise
 
     def update_event(self, event_id: str, summary: str, start: str, end: str, description: str = "", recurrence: list = []) -> dict:
         body = {

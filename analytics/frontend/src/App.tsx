@@ -2,6 +2,7 @@ import { useState } from 'react';
 import CalendarTab from './components/CalendarTab';
 import AnalyticsTab from './components/AnalyticsTab';
 import AuthPage from './components/AuthPage';
+import OnboardingSurvey, { SurveyAnswers } from './components/OnboardingSurvey';
 import { ReflectionEntry } from './components/ReflectionPanel';
 import { AuthProvider, useAuth } from './AuthContext';
 import './App.css';
@@ -17,6 +18,13 @@ function AppShell() {
   const { user, loading, signOut } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>('calendar');
   const [reflections, setReflections] = useState<ReflectionEntry[]>([]);
+  const [showSurvey, setShowSurvey] = useState<boolean>(
+    () => !localStorage.getItem('calcoach_survey_done')
+  );
+
+  function handleSurveyComplete(_answers: SurveyAnswers) {
+    setShowSurvey(false);
+  }
 
   if (loading) {
     return <div className="auth-loading">Loading…</div>;
@@ -46,6 +54,7 @@ function AppShell() {
 
   return (
     <div className="app">
+      {showSurvey && <OnboardingSurvey onComplete={handleSurveyComplete} />}
       <header className="app-header">
         <div className="header-left">
           <h1 className="app-title">CalCoach 🐻 📅</h1>
