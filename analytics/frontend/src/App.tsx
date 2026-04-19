@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import CalendarTab from './components/CalendarTab';
 import AnalyticsTab from './components/AnalyticsTab';
+import AuthPage from './components/AuthPage';
 import { ReflectionEntry } from './components/ReflectionPanel';
+import { AuthProvider, useAuth } from './AuthContext';
 import './App.css';
 
 type Tab = 'calendar' | 'analytics';
@@ -11,9 +13,18 @@ const mkId = () => String(++idCounter);
 
 const API = 'http://localhost:8001';
 
-export default function App() {
+function AppShell() {
+  const { user, loading, signOut } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>('calendar');
   const [reflections, setReflections] = useState<ReflectionEntry[]>([]);
+
+  if (loading) {
+    return <div className="auth-loading">Loading…</div>;
+  }
+
+  if (!user) {
+    return <AuthPage />;
+  }
 
   async function handleSaveReflection(entry: Omit<ReflectionEntry, 'id' | 'savedAt'>) {
     const newEntry: ReflectionEntry = {
@@ -50,11 +61,23 @@ export default function App() {
             </button>
           ))}
         </nav>
+        <div className="header-user">
+          <span className="header-email">{user.email}</span>
+          <button className="btn-signout" onClick={signOut}>Sign out</button>
+        </div>
       </header>
       <main className="app-main">
         {activeTab === 'calendar' && <CalendarTab reflections={reflections} onSaveReflection={handleSaveReflection} />}
         {activeTab === 'analytics' && <AnalyticsTab reflections={reflections} />}
       </main>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppShell />
+    </AuthProvider>
   );
 }
