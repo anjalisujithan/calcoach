@@ -82,6 +82,48 @@ COLLECTION = "reflections"
 USERS_COLLECTION = "users"
 
 
+# ── Bandit persistence helpers ────────────────────────────────────────────────
+
+async def _save_bandit_state(email: str) -> None:
+    """Persist the in-memory bandit state for this user to Firestore.
+    Serialized as a JSON string to avoid Firestore's nested-array limitation."""
+    if not _RL_AVAILABLE or _user_profile is None:
+        return
+    try:
+        db = get_db()
+        doc_ref = db.collection(USERS_COLLECTION).document(email)
+        await doc_ref.set(
+            {"bandit_state_json": json.dumps(_user_profile.bandit_state.to_dict())},
+            merge=True,
+        )
+        print(f"[RL] Saved bandit state for {email} (n_updates={_user_profile.bandit_state.n_updates})")
+    except Exception as e:
+        print(f"[RL] Failed to save bandit state: {e}")
+
+
+async def _load_bandit_state(email: str) -> None:
+    """Load bandit state from Firestore into the in-memory user profile."""
+    if not _RL_AVAILABLE or _user_profile is None:
+        return
+    try:
+        db = get_db()
+        doc_ref = db.collection(USERS_COLLECTION).document(email)
+        doc = await doc_ref.get()
+        if doc.exists:
+            data = doc.to_dict() or {}
+            bs_json = data.get("bandit_state_json")
+            if bs_json:
+                bs = json.loads(bs_json)
+                if bs.get("A") and bs.get("b"):
+                    from calcoach.user_profile.bandit_state import BanditState
+                    _user_profile.bandit_state = BanditState.from_dict(bs)
+                    print(f"[RL] Loaded bandit state for {email} (n_updates={_user_profile.bandit_state.n_updates})")
+                    return
+        print(f"[RL] No existing bandit state for {email}, starting fresh")
+    except Exception as e:
+        print(f"[RL] Failed to load bandit state: {e}")
+
+
 # ── Models ────────────────────────────────────────────────────────────────────
 
 class ReflectionIn(BaseModel):
@@ -164,17 +206,25 @@ class UserRegisterIn(BaseModel):
     display_name: str = ""
 
 
+_current_user_email: str = ""  # tracks the logged-in user's email for bandit persistence
+
+
 @app.post("/users/register", status_code=201)
 async def register_user(body: UserRegisterIn):
     """Create a student document on first signup (idempotent — no-op if already exists)."""
+    global _current_user_email
     email = body.email.strip().lower()
     if not email:
         raise HTTPException(400, "email is required")
+
+    _current_user_email = email
 
     db = get_db()
     doc_ref = db.collection(USERS_COLLECTION).document(email)
     existing = await doc_ref.get()
     if existing.exists:
+        # Load persisted bandit state for this returning user
+        await _load_bandit_state(email)
         return {"created": False, "data": existing.to_dict()}
 
     now = datetime.now(timezone.utc).isoformat() + "Z"
@@ -282,14 +332,19 @@ def _build_system_prompt(sessions: List[dict], reflections: List[dict]) -> str:
     today_str = now.strftime("%Y-%m-%d")
 
     cal_lines = []
+    busy_lines = []
     for s in sorted(sessions, key=lambda x: (x.get("date", ""), x.get("startHour", 0))):
         date = s.get("date", "")
         if date < today_str:
             continue
         h, m = s.get("startHour", 0), s.get("startMin", 0)
         dur = s.get("durationMins", 0)
+        end_total = h * 60 + m + dur
+        end_h, end_m = end_total // 60, end_total % 60
         cal_lines.append(f"  - {date} {h:02d}:{m:02d} ({dur}min): {s.get('title')}")
+        busy_lines.append(f"  BUSY: {date} {h:02d}:{m:02d}–{end_h:02d}:{end_m:02d} [{s.get('title')}]")
     cal_block = "\n".join(cal_lines[:30]) if cal_lines else "  (no upcoming events)"
+    busy_block = "\n".join(busy_lines[:30]) if busy_lines else "  (no busy blocks — all time is free)"
 
     ref_lines = []
     for r in reflections[-5:]:
@@ -305,6 +360,9 @@ def _build_system_prompt(sessions: List[dict], reflections: List[dict]) -> str:
 
 CURRENT CALENDAR:
 {cal_block}
+
+BUSY BLOCKS (do NOT schedule anything that overlaps with these):
+{busy_block}
 
 RECENT REFLECTIONS (productivity ratings and notes from past sessions):
 {ref_block}
@@ -322,7 +380,8 @@ When the user asks you to SCHEDULE, ADD, or CREATE an event:
 - Set "reply" to a brief sentence (e.g. "Here are 3 options for your CS homework:")
 - Provide exactly 3 alternative scheduling OPTIONS in "candidate_slots" — different strategies/days for the same task. The server validates against BUSY times: every block must lie entirely inside a FREE window (see follow-up messages if a revision is requested).
 - SINGLE continuous block per option: use top-level fields only: title, description, date (yyyy-MM-dd), startHour (0-23), startMin (0 or 30), durationMins, reasoning (1 sentence)
-- MULTI-BLOCK one option (e.g. 4 hours as four 1-hour sessions): ONE object with the same title/description/reasoning at the top level, plus a "blocks" array. Each block must have: date, startHour, startMin, durationMins (optional title/description override per block). The sum of blocks' durationMins should match the user's requested total work time. Do NOT split one option into multiple top-level candidate_slots entries.
+- MULTI-BLOCK one option (e.g. 4 hours as four 1-hour sessions): ONE object with the same title/description/reasoning at the top level, plus a "blocks" array. Each block must have: date, startHour, startMin, durationMins (optional title/description override per block). Do NOT split one option into multiple top-level candidate_slots entries.
+- DURATION RULE (hard): for every option, the sum of all blocks' durationMins MUST equal the total time the user asked to schedule. If the user asks for 2 hours, every option must total exactly 120 minutes. This is non-negotiable — never under- or over-schedule.
 - Leave "events_to_create" as an empty array
 
 When NOT scheduling (just conversation or advice):
@@ -334,6 +393,7 @@ Do not include any text outside the JSON object."""
 # ── RL helpers ────────────────────────────────────────────────────────────────
 
 def _sessions_to_calendar_json(sessions: List[dict]) -> dict:
+    """Build weekday-keyed busy slots (used by ScheduleValidator for work-hours/avoid-days checks)."""
     cal: dict = {}
     for s in sessions:
         try:
@@ -346,6 +406,47 @@ def _sessions_to_calendar_json(sessions: List[dict]) -> dict:
         except Exception:
             continue
     return cal
+
+
+def _sessions_to_date_busy(sessions: List[dict]) -> dict:
+    """Build date-keyed busy intervals (minutes since midnight) for exact clash detection."""
+    busy: dict = {}  # "YYYY-MM-DD" -> List[(start_min, end_min)]
+    for s in sessions:
+        try:
+            date = s.get("date", "")
+            if not date:
+                continue
+            h, m = int(s.get("startHour", 0)), int(s.get("startMin", 0))
+            dur = int(s.get("durationMins", 0))
+            start_min = h * 60 + m
+            end_min = start_min + dur
+            busy.setdefault(date, []).append((start_min, end_min))
+        except Exception:
+            continue
+    return busy
+
+
+def _bundle_clashes_with_sessions(bundle: dict, date_busy: dict) -> Tuple[bool, str]:
+    """
+    Check every block in a bundle against exact existing-event times on that specific date.
+    Returns (True, reason) if any block overlaps an existing event, (False, "") if clean.
+    """
+    parts = bundle.get("parts") or []
+    for p in parts:
+        date = p.get("date", "")
+        h = int(p.get("startHour", 0))
+        m = int(p.get("startMin", 0))
+        dur = int(p.get("durationMins", 0))
+        start_min = h * 60 + m
+        end_min = start_min + dur
+        for (busy_start, busy_end) in date_busy.get(date, []):
+            # Overlap: not (end <= busy_start or start >= busy_end)
+            if not (end_min <= busy_start or start_min >= busy_end):
+                return True, (
+                    f"Block on {date} {h:02d}:{m:02d}+{dur}min overlaps existing event "
+                    f"{busy_start // 60:02d}:{busy_start % 60:02d}-{busy_end // 60:02d}:{busy_end % 60:02d}"
+                )
+    return False, ""
 
 
 def _prefs_for_validation() -> UserPreferences:
@@ -399,6 +500,23 @@ def _bundle_fingerprint(bundle: dict) -> tuple:
     )
 
 
+def _bundle_total_minutes(bundle: dict) -> int:
+    parts = bundle.get("parts") or []
+    return sum(int(p.get("durationMins", 0)) for p in parts)
+
+
+def _target_duration_from_bundles(bundles: List[dict]) -> Optional[int]:
+    """
+    Find the most common total duration (mode) across the initial bundles.
+    This is the 'requested' total — all validated bundles must match it.
+    """
+    from collections import Counter
+    totals = [_bundle_total_minutes(b) for b in bundles if _bundle_total_minutes(b) > 0]
+    if not totals:
+        return None
+    return Counter(totals).most_common(1)[0][0]
+
+
 def _format_free_windows_text(prefs: UserPreferences, sessions: List[dict]) -> str:
     if not _RL_AVAILABLE or ScheduleValidator is None:
         return "(Scheduler unavailable — cannot list free windows.)"
@@ -423,6 +541,7 @@ def _validate_scheduling_bundle(
     bundle: dict,
     sessions: List[dict],
     prefs: UserPreferences,
+    target_minutes: Optional[int] = None,
 ) -> Tuple[bool, str, List[Tuple[int, str]]]:
     """
     Returns (ok, overall_reason, bad_block_indices).
@@ -433,9 +552,28 @@ def _validate_scheduling_bundle(
     cand = _bundle_to_candidate(bundle)
     if cand is None:
         return False, "unparseable bundle", []
-    calendar_json = _sessions_to_calendar_json(sessions)
+
+    # Hard check 1: exact date-based clash with existing calendar events
+    date_busy = _sessions_to_date_busy(sessions)
+    clashes, clash_reason = _bundle_clashes_with_sessions(bundle, date_busy)
+    if clashes:
+        return False, clash_reason, []
+
+    # Hard check 2: total duration must match what the user requested
+    if target_minutes is not None:
+        actual_minutes = _bundle_total_minutes(bundle)
+        if abs(actual_minutes - target_minutes) > 5:
+            return False, (
+                f"Duration mismatch: blocks total {actual_minutes}min but {target_minutes}min is required. "
+                "Adjust block durationMins so they sum to the requested total."
+            ), []
+
+    # Hard check 3: work hours / avoid days via ScheduleValidator.
+    # Pass an EMPTY calendar so the weekday-keyed slot list doesn't wrongly block every
+    # instance of a weekday that has ANY existing event.  Exact date-level clashes are
+    # already handled by check 1 above.
     validator = ScheduleValidator(prefs)
-    free_windows = validator.get_all_free_windows(calendar_json)
+    free_windows = validator.get_all_free_windows({})
     task = _task_from_bundle_for_validation(bundle, cand)
     ok, reason = validator.validate_candidate(cand, free_windows, task)
     if ok:
@@ -452,10 +590,11 @@ def _diagnose_bundles_for_prompt(
     bundles: List[dict],
     sessions: List[dict],
     prefs: UserPreferences,
+    target_minutes: Optional[int] = None,
 ) -> str:
     lines: List[str] = []
     for i, bundle in enumerate(bundles):
-        ok, reason, bad = _validate_scheduling_bundle(bundle, sessions, prefs)
+        ok, reason, bad = _validate_scheduling_bundle(bundle, sessions, prefs, target_minutes=target_minutes)
         if ok:
             lines.append(f"OPTION {i + 1}: VALID ✓")
             continue
@@ -657,9 +796,15 @@ async def _repair_scheduling_until_viable(
     viable_acc: List[dict] = []
     seen: set = set()
 
+    # Determine the target total duration from the initial suggestions (mode across all 3).
+    # Every validated bundle must sum to this total ± 5 min.
+    target_minutes = _target_duration_from_bundles(initial_bundles)
+    if target_minutes:
+        print(f"[schedule] target_minutes={target_minutes}")
+
     def _absorb(bundles: List[dict]) -> None:
         for b in bundles:
-            ok, _, _ = _validate_scheduling_bundle(b, sessions, prefs)
+            ok, _, _ = _validate_scheduling_bundle(b, sessions, prefs, target_minutes=target_minutes)
             if not ok:
                 continue
             fp = _bundle_fingerprint(b)
@@ -674,11 +819,17 @@ async def _repair_scheduling_until_viable(
     current_parsed: dict = initial_parsed
     bundles_in: List[dict] = list(initial_bundles)
 
+    duration_rule = (
+        f"DURATION RULE (hard): every option's blocks must sum to exactly {target_minutes} minutes "
+        "(±5 min tolerance). If an option's blocks don't add up, adjust durationMins — do NOT change the "
+        "total requested time.\n\n"
+    ) if target_minutes else ""
+
     repair_round = 0
     while len(viable_acc) < TARGET_VIABLE_SUGGESTIONS and repair_round < SCHEDULING_REPAIR_MAX_ROUNDS:
         repair_round += 1
         free_txt = _format_free_windows_text(prefs, sessions)
-        diag = _diagnose_bundles_for_prompt(bundles_in, sessions, prefs)
+        diag = _diagnose_bundles_for_prompt(bundles_in, sessions, prefs, target_minutes=target_minutes)
         valid_json = ""
         if viable_acc:
             valid_json = (
@@ -691,7 +842,9 @@ async def _repair_scheduling_until_viable(
             )
         repair_content = (
             "Automated calendar check: some proposed times clash with existing events, fall outside "
-            "free work windows, or break other hard rules (overlap within the same option, daily cap, etc.).\n\n"
+            "free work windows, or break other hard rules (overlap within the same option, daily cap, "
+            "or incorrect total duration).\n\n"
+            f"{duration_rule}"
             f"{valid_json}"
             "DIAGNOSIS of your LAST response (fix invalid options; keep valid ones verbatim if listed above):\n"
             f"{diag}\n\n"
@@ -807,6 +960,18 @@ async def chat(body: ChatMessage):
                 ranked_bundles = _rank_slots(bundles_in, body.sessions) if bundles_in else []
                 ranked_bundles = ranked_bundles[:TARGET_VIABLE_SUGGESTIONS]
 
+            # Final clash filter — runs regardless of which code path produced ranked_bundles
+            # (repair loop, fallback, or RL-disabled).  Ensures no overlapping slot ever
+            # reaches the frontend.
+            _date_busy = _sessions_to_date_busy(body.sessions)
+            pre_filter_count = len(ranked_bundles)
+            ranked_bundles = [
+                b for b in ranked_bundles
+                if not _bundle_clashes_with_sessions(b, _date_busy)[0]
+            ]
+            if len(ranked_bundles) < pre_filter_count:
+                print(f"[chat] Final clash filter removed {pre_filter_count - len(ranked_bundles)} clashing bundle(s)")
+
             global _last_candidate_slots
             _last_candidate_slots = ranked_bundles
 
@@ -917,6 +1082,8 @@ async def feedback(body: FeedbackIn):
         feedback_type = FeedbackType.ACCEPTED if body.feedback == "accepted" else FeedbackType.REJECTED
         reward = compute_reward(feedback_type)
         _bandit.update(context, reward, _user_profile)
+        if _current_user_email:
+            await _save_bandit_state(_current_user_email)
         return {"ok": True, "rl_active": True, "n_updates": _user_profile.bandit_state.n_updates}
     except Exception as e:
         return {"ok": False, "message": str(e)}
@@ -994,6 +1161,8 @@ async def onboarding(body: OnboardingIn):
                 _bandit.update(ctx, 0.4, _user_profile)
 
         print(f"[Onboarding] Applied survey: work={work_start}-{work_end}, avoid={avoid_days}, chunk={pref_chunk}min")
+        if _current_user_email:
+            await _save_bandit_state(_current_user_email)
         return {"ok": True, "rl_active": True}
     except Exception as e:
         print(f"[Onboarding] Error: {e}")

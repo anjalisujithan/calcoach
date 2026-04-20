@@ -217,7 +217,7 @@ export default function CalendarTab({ reflections, onSaveReflection }: Props) {
         body: JSON.stringify({
           message: text,
           history: chatHistory,
-          sessions: sessions.map(({ title, date, startHour, startMin, durationMins }) => ({
+          sessions: sessions.filter(s => !s.pending).map(({ title, date, startHour, startMin, durationMins }) => ({
             title, date, startHour, startMin, durationMins,
           })),
           reflections: reflections.map(({ title, date, startTime, endTime, productivity, reflectionText }) => ({
