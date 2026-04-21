@@ -7,3 +7,4 @@ __pycache__/
 .env
 client_secret*.json
 node_modules
+.DS_Store
