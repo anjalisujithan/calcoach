@@ -93,11 +93,12 @@ class LinUCBBandit:
         A, b = self._load_state(user_profile.bandit_state)
         A_inv = np.linalg.inv(A)
         theta = A_inv @ b
+        eff_alpha = self._effective_alpha(user_profile)
 
         scored: List[Tuple[float, CandidateSchedule]] = []
         for candidate in candidates:
             x = extract(candidate, user_profile, task, calendar_json)
-            score = self._score(x, theta, A_inv)
+            score = self._score(x, theta, A_inv, eff_alpha)
             scored.append((score, candidate))
 
         scored.sort(key=lambda t: t[0], reverse=True)
@@ -120,11 +121,12 @@ class LinUCBBandit:
         A, b = self._load_state(user_profile.bandit_state)
         A_inv = np.linalg.inv(A)
         theta = A_inv @ b
+        eff_alpha = self._effective_alpha(user_profile)
 
         results = []
         for candidate in candidates:
             x = extract(candidate, user_profile, task, calendar_json)
-            score = self._score(x, theta, A_inv)
+            score = self._score(x, theta, A_inv, eff_alpha)
             results.append((candidate, score))
 
         results.sort(key=lambda t: t[1], reverse=True)
@@ -213,16 +215,65 @@ class LinUCBBandit:
     # Private helpers
     # ------------------------------------------------------------------
 
+    def _effective_alpha(self, user_profile: UserProfile) -> float:
+        """
+        Compute a personality-informed, decaying exploration coefficient.
+
+        Decay formula:  effective_alpha = alpha / (1 + decay_rate * sqrt(n_updates))
+
+        Personality → decay_rate mapping (higher = faster convergence to exploitation):
+          rusher           2.0  — wants decisive picks, stop exploring quickly
+          planner          0.7  — likes seeing options, decay slowly
+          context_switcher 0.8  — values variety, decay slowly
+          night_owl        1.0  — neutral
+          inconsistent     0.5  — preferences unstable, keep exploring longest
+
+        If multiple personality weights are set, we take a weighted average of
+        their decay rates (weights clipped to [0, 1] and normalised).
+
+        decay_rate is clamped to [0.5, 2.0] before use.
+        """
+        DECAY_RATES: Dict[str, float] = {
+            "rusher": 2.0,
+            "planner": 0.7,
+            "context_switcher": 0.8,
+            "night_owl": 1.0,
+            "inconsistent": 0.5,
+        }
+
+        pw = user_profile.personality_weights
+        # Build a weighted average decay rate from personality weights
+        total_weight = 0.0
+        weighted_sum = 0.0
+        for personality, rate in DECAY_RATES.items():
+            weight = max(0.0, float(getattr(pw, personality, 0.0)))
+            weighted_sum += weight * rate
+            total_weight += weight
+
+        if total_weight > 0:
+            decay_rate = weighted_sum / total_weight
+        else:
+            decay_rate = 1.0  # default neutral
+
+        decay_rate = max(0.5, min(2.0, decay_rate))
+
+        n = user_profile.bandit_state.n_updates
+        effective = self.alpha / (1.0 + decay_rate * (n ** 0.5))
+        return effective
+
     def _score(
-        self, x: np.ndarray, theta: np.ndarray, A_inv: np.ndarray
+        self, x: np.ndarray, theta: np.ndarray, A_inv: np.ndarray, alpha: float = None
     ) -> float:
         """
         LinUCB score for a single context vector.
           exploitation term: θᵀx       (how well this matches learned preferences)
           exploration bonus: α√(xᵀA⁻¹x) (higher when this region is under-explored)
+
+        alpha: effective exploration coefficient (defaults to self.alpha if not given)
         """
+        a = alpha if alpha is not None else self.alpha
         exploitation = float(theta @ x)
-        exploration = self.alpha * float(np.sqrt(x @ A_inv @ x))
+        exploration = a * float(np.sqrt(x @ A_inv @ x))
         return exploitation + exploration
 
     def _load_state(self, bandit_state: BanditState) -> Tuple[np.ndarray, np.ndarray]:
