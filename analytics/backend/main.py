@@ -51,7 +51,7 @@ else:
     _bandit = None
     _user_profile = None
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Tuple
 
 import json
@@ -371,21 +371,45 @@ Use the calendar and reflections to give personalized, context-aware scheduling 
 
 Always respond with valid JSON in exactly this format:
 {{
-  "reply": "<brief intro only — do NOT list the slots here, the UI will display them>",
+  "reply": "<your message to the user>",
   "candidate_slots": [],
   "events_to_create": []
 }}
 
-When the user asks you to SCHEDULE, ADD, or CREATE an event:
-- Set "reply" to a brief sentence (e.g. "Here are 3 options for your CS homework:")
-- Provide exactly 3 alternative scheduling OPTIONS in "candidate_slots" — different strategies/days for the same task. The server validates against BUSY times: every block must lie entirely inside a FREE window (see follow-up messages if a revision is requested).
-- SINGLE continuous block per option: use top-level fields only: title, description, date (yyyy-MM-dd), startHour (0-23), startMin (0 or 30), durationMins, reasoning (1 sentence)
-- MULTI-BLOCK one option (e.g. 4 hours as four 1-hour sessions): ONE object with the same title/description/reasoning at the top level, plus a "blocks" array. Each block must have: date, startHour, startMin, durationMins (optional title/description override per block). Do NOT split one option into multiple top-level candidate_slots entries.
-- DURATION RULE (hard): for every option, the sum of all blocks' durationMins MUST equal the total time the user asked to schedule. If the user asks for 2 hours, every option must total exactly 120 minutes. This is non-negotiable — never under- or over-schedule.
-- Leave "events_to_create" as an empty array
+=== SCHEDULING REQUESTS — READ THIS CAREFULLY ===
 
-When NOT scheduling (just conversation or advice):
-- Leave both "candidate_slots" and "events_to_create" as empty arrays
+When the user asks you to SCHEDULE, ADD, or CREATE a task, you MUST collect two pieces of information before generating any candidate_slots:
+  1. TOTAL TIME NEEDED — how many hours/minutes does the whole task require?
+  2. DEADLINE — what is the exact due date?
+
+If either piece is missing from the conversation so far:
+- Set candidate_slots to [] and events_to_create to []
+- In "reply", ask ONLY for the missing info in a single friendly question
+- Do NOT generate suggestions yet
+
+Only proceed with generating candidate_slots if:
+- The user has explicitly provided both total time and deadline, OR
+- The user explicitly says they don't know / don't have a deadline (then proceed without a deadline constraint)
+
+=== GENERATING SUGGESTIONS (only when you have total time + deadline) ===
+
+- Set "reply" to a brief intro sentence only (e.g. "Here are 3 options for your CS185 project:")
+- Provide exactly 3 alternative scheduling OPTIONS in "candidate_slots"
+- SINGLE continuous block per option: title, description, date (yyyy-MM-dd), startHour (0-23), startMin (0 or 30), durationMins, reasoning (1 sentence), deadline_date (yyyy-MM-dd)
+- MULTI-BLOCK option (e.g. 10 hours split into 2-hour sessions): ONE object with title/description/reasoning/deadline_date at top level, plus a "blocks" array. Each block: date, startHour, startMin, durationMins. Do NOT use multiple top-level entries for one option.
+
+DEADLINE RULE (hard):
+- deadline_date is always the calendar date the task is due, regardless of time-of-day wording
+- "due Friday", "due Friday at midnight", "due Friday at 11:59pm" all mean deadline_date = that Friday's date (e.g. "2026-04-25")
+- "due Saturday at midnight" also means deadline_date = Saturday's date — NOT Sunday
+- Every block's date must be on or before deadline_date. Never schedule work after the deadline.
+
+DURATION RULE (hard):
+- The sum of all blocks' durationMins for each option MUST equal the total time the user requested (±5 min)
+- If the user requests 10 hours, every option must total exactly 600 minutes — no exceptions
+
+=== NON-SCHEDULING (conversation / advice) ===
+- Leave both candidate_slots and events_to_create as empty arrays
 
 Do not include any text outside the JSON object."""
 
@@ -517,24 +541,83 @@ def _target_duration_from_bundles(bundles: List[dict]) -> Optional[int]:
     return Counter(totals).most_common(1)[0][0]
 
 
-def _format_free_windows_text(prefs: UserPreferences, sessions: List[dict]) -> str:
-    if not _RL_AVAILABLE or ScheduleValidator is None:
-        return "(Scheduler unavailable — cannot list free windows.)"
-    cal = _sessions_to_calendar_json(sessions)
-    validator = ScheduleValidator(prefs)
-    free_by_day = validator.get_all_free_windows(cal)
+def _format_date_specific_availability(
+    sessions: List[dict],
+    prefs: UserPreferences,
+    days_ahead: int = 14,
+) -> str:
+    """
+    For the repair prompt: show each upcoming date with its busy intervals and
+    the resulting free windows within work hours.  Date-specific (not weekday-keyed)
+    so the LLM knows exactly which slots are available on each calendar date.
+    """
+    now = datetime.now(timezone.utc)
+    today_str = now.strftime("%Y-%m-%d")
+    cutoff_str = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+
+    # Parse work hours once
+    try:
+        ws_h, ws_m = map(int, prefs.work_start.split(":"))
+        we_h, we_m = map(int, prefs.work_end.split(":"))
+    except Exception:
+        ws_h, ws_m, we_h, we_m = 9, 0, 21, 0
+    work_start_min = ws_h * 60 + ws_m
+    work_end_min = we_h * 60 + we_m
+
+    date_busy = _sessions_to_date_busy(sessions)
+
+    # Generate list of dates from today through cutoff
     lines: List[str] = []
-    for day in DAY_ORDER:
-        windows = free_by_day.get(day, [])
-        if not windows:
-            lines.append(f"{day}: (no free window within work hours — avoid day or fully busy)")
+    cursor = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    cutoff_dt = cursor + timedelta(days=days_ahead)
+    while cursor <= cutoff_dt:
+        date_str = cursor.strftime("%Y-%m-%d")
+        weekday = cursor.strftime("%A")
+        if _RL_AVAILABLE and prefs.avoid_days and weekday in prefs.avoid_days:
+            lines.append(f"  {weekday} {date_str}: AVOID DAY (no work)")
+            cursor += timedelta(days=1)
+            continue
+
+        busy_intervals = sorted(date_busy.get(date_str, []))
+
+        # Compute free windows within work hours by subtracting busy intervals
+        free: List[tuple] = []
+        cursor_min = work_start_min
+        for b_start, b_end in busy_intervals:
+            # Clamp to work hours
+            b_start = max(b_start, work_start_min)
+            b_end = min(b_end, work_end_min)
+            if b_start > cursor_min:
+                free.append((cursor_min, b_start))
+            cursor_min = max(cursor_min, b_end)
+        if cursor_min < work_end_min:
+            free.append((cursor_min, work_end_min))
+
+        # Only include windows of at least 30 min
+        free = [(s, e) for s, e in free if e - s >= 30]
+
+        if busy_intervals:
+            busy_fmt = ", ".join(
+                f"{s // 60:02d}:{s % 60:02d}–{e // 60:02d}:{e % 60:02d}"
+                for s, e in sorted(busy_intervals)
+            )
         else:
-            fmts = [
-                f"{ws.strftime('%H:%M')}-{we.strftime('%H:%M')}"
-                for ws, we in windows
-            ]
-            lines.append(f"{day}: " + ", ".join(fmts))
-    return "\n".join(lines)
+            busy_fmt = "none"
+
+        if free:
+            free_fmt = ", ".join(
+                f"{s // 60:02d}:{s % 60:02d}–{e // 60:02d}:{e % 60:02d}"
+                for s, e in free
+            )
+        else:
+            free_fmt = "FULLY BOOKED"
+
+        lines.append(
+            f"  {weekday} {date_str}: busy=[{busy_fmt}]  FREE=[{free_fmt}]"
+        )
+        cursor += timedelta(days=1)
+
+    return "\n".join(lines) if lines else "  (no availability data)"
 
 
 def _validate_scheduling_bundle(
@@ -559,7 +642,19 @@ def _validate_scheduling_bundle(
     if clashes:
         return False, clash_reason, []
 
-    # Hard check 2: total duration must match what the user requested
+    # Hard check 2: all blocks must fall on or before the deadline date
+    deadline_date = bundle.get("deadline_date")
+    if deadline_date:
+        parts = bundle.get("parts") or []
+        for p in parts:
+            block_date = p.get("date", "")
+            if block_date > deadline_date:
+                return False, (
+                    f"Block on {block_date} is after the deadline {deadline_date}. "
+                    "All blocks must be scheduled on or before the deadline."
+                ), []
+
+    # Hard check 3: total duration must match what the user requested
     if target_minutes is not None:
         actual_minutes = _bundle_total_minutes(bundle)
         if abs(actual_minutes - target_minutes) > 5:
@@ -568,7 +663,7 @@ def _validate_scheduling_bundle(
                 "Adjust block durationMins so they sum to the requested total."
             ), []
 
-    # Hard check 3: work hours / avoid days via ScheduleValidator.
+    # Hard check 4: work hours / avoid days via ScheduleValidator.
     # Pass an EMPTY calendar so the weekday-keyed slot list doesn't wrongly block every
     # instance of a weekday that has ANY existing event.  Exact date-level clashes are
     # already handled by check 1 above.
@@ -626,6 +721,7 @@ def _normalize_scheduling_candidate(raw: dict) -> Optional[dict]:
     title = raw.get("title") or "Task"
     description = raw.get("description") or ""
     reasoning = raw.get("reasoning") or ""
+    deadline_date: Optional[str] = raw.get("deadline_date") or None
     parts: List[dict] = []
     blocks = raw.get("blocks")
     if isinstance(blocks, list) and len(blocks) > 0:
@@ -657,7 +753,11 @@ def _normalize_scheduling_candidate(raw: dict) -> Optional[dict]:
         })
     if not parts:
         return None
-    return {"title": title, "description": description, "reasoning": reasoning, "parts": parts}
+    # Fallback: if LLM omitted deadline_date, derive it from the latest block date
+    if not deadline_date and parts:
+        deadline_date = max(p["date"] for p in parts)
+    return {"title": title, "description": description, "reasoning": reasoning,
+            "deadline_date": deadline_date, "parts": parts}
 
 
 def _bundle_to_candidate(bundle: dict) -> Optional[CandidateSchedule]:
@@ -825,10 +925,19 @@ async def _repair_scheduling_until_viable(
         "total requested time.\n\n"
     ) if target_minutes else ""
 
+    # Extract the deadline from the initial bundles (use the earliest deadline found — most conservative)
+    _all_deadlines = [b.get("deadline_date") for b in initial_bundles if b.get("deadline_date")]
+    _deadline_for_repair = min(_all_deadlines) if _all_deadlines else None
+    deadline_rule = (
+        f"DEADLINE RULE (hard): the user's deadline is {_deadline_for_repair}. "
+        "Every block in every option must be scheduled ON or BEFORE this date. "
+        "Do not schedule any block after this date under any circumstances.\n\n"
+    ) if _deadline_for_repair else ""
+
     repair_round = 0
     while len(viable_acc) < TARGET_VIABLE_SUGGESTIONS and repair_round < SCHEDULING_REPAIR_MAX_ROUNDS:
         repair_round += 1
-        free_txt = _format_free_windows_text(prefs, sessions)
+        avail_txt = _format_date_specific_availability(sessions, prefs)
         diag = _diagnose_bundles_for_prompt(bundles_in, sessions, prefs, target_minutes=target_minutes)
         valid_json = ""
         if viable_acc:
@@ -841,17 +950,16 @@ async def _repair_scheduling_until_viable(
                 + "\n\n"
             )
         repair_content = (
-            "Automated calendar check: some proposed times clash with existing events, fall outside "
-            "free work windows, or break other hard rules (overlap within the same option, daily cap, "
-            "or incorrect total duration).\n\n"
+            "Automated calendar check: some proposed times clash with existing events or break other "
+            "hard rules (incorrect total duration, blocks after deadline).\n\n"
+            f"{deadline_rule}"
             f"{duration_rule}"
             f"{valid_json}"
             "DIAGNOSIS of your LAST response (fix invalid options; keep valid ones verbatim if listed above):\n"
             f"{diag}\n\n"
-            "FREE WINDOWS (each scheduled block must fit entirely inside ONE interval for that weekday):\n"
-            f"{free_txt}\n\n"
-            f"Allowed work hours: {prefs.work_start}–{prefs.work_end}. avoid_days: {list(prefs.avoid_days)}. "
-            f"Buffer (minutes) around busy events: {prefs.buffer_minutes}.\n\n"
+            "DATE-BY-DATE AVAILABILITY (use ONLY the FREE windows shown — do NOT place any block inside a busy interval):\n"
+            f"{avail_txt}\n\n"
+            f"Work hours: {prefs.work_start}–{prefs.work_end}. avoid_days: {list(prefs.avoid_days)}.\n\n"
             "Return JSON in the SAME schema (reply + candidate_slots + events_to_create). "
             f"candidate_slots must contain exactly {TARGET_VIABLE_SUGGESTIONS} items; each must be fully valid. "
             "For multi-block options, change only failing blocks' date/startHour/startMin/durationMins when "
