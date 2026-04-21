@@ -76,7 +76,7 @@ function AppShell() {
         </div>
       </header>
       <main className="app-main">
-        {activeTab === 'calendar' && <CalendarTab reflections={reflections} onSaveReflection={handleSaveReflection} />}
+        {activeTab === 'calendar' && <CalendarTab reflections={reflections} onSaveReflection={handleSaveReflection} userEmail={user.email ?? ''} />}
         {activeTab === 'analytics' && <AnalyticsTab reflections={reflections} />}
       </main>
     </div>

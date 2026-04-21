@@ -4,6 +4,7 @@ import secrets
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from google_auth_oauthlib.flow import Flow
+from firestore_client import save_calendar_tokens
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 CLIENT_SECRETS_FILE = "client_secret_372533672163-9usane5tl6oqvv04n26vo6arsc61igpp.apps.googleusercontent.com.json"
@@ -13,7 +14,9 @@ router = APIRouter(prefix="/auth")
 
 
 @router.get("/login")
-def login(request: Request):
+def login(request: Request, email: str = ""):
+    if email:
+        request.session["user_email"] = email.strip().lower()
     flow = Flow.from_client_secrets_file(
         CLIENT_SECRETS_FILE,
         scopes=SCOPES,
@@ -49,7 +52,7 @@ def callback(request: Request, code: str, state: str):
     flow.fetch_token(code=code, code_verifier=request.session.get("code_verifier"))
     creds = flow.credentials
 
-    request.session["tokens"] = {
+    tokens = {
         "access_token": creds.token,
         "refresh_token": creds.refresh_token,
         "token_uri": creds.token_uri,
@@ -57,6 +60,11 @@ def callback(request: Request, code: str, state: str):
         "client_secret": creds.client_secret,
         "scopes": list(creds.scopes or SCOPES),
     }
+    request.session["tokens"] = tokens
+
+    email = request.session.get("user_email", "")
+    if email:
+        save_calendar_tokens(email, tokens)
 
     return RedirectResponse("http://localhost:3000")
 
@@ -67,3 +75,10 @@ def status(request: Request):
     if not tokens:
         return {"authenticated": False}
     return {"authenticated": True, "has_refresh_token": bool(tokens.get("refresh_token"))}
+
+
+@router.post("/logout")
+def logout(request: Request):
+    """Clear calendar session state."""
+    request.session.clear()
+    return {"ok": True}

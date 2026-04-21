@@ -11,6 +11,7 @@ import {
 import { auth } from './firebase';
 
 const API = 'http://localhost:8001';
+const CALENDAR_API = 'http://localhost:8000';
 
 interface AuthContextType {
   user: User | null;
@@ -68,6 +69,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
+    try {
+      await fetch(`${CALENDAR_API}/auth/logout`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+    } catch (e) {
+      console.warn('Calendar logout snapshot failed:', e);
+    }
     await firebaseSignOut(auth);
   };
 
