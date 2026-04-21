@@ -137,6 +137,10 @@ class ReflectionIn(BaseModel):
     reflectionText: str
     id: str
     savedAt: str
+    # Optional MCQ fields — used as delayed RL reward signals
+    sessionLengthFeedback: Optional[str] = None  # 'too_short' | 'just_right' | 'too_long'
+    timingFeedback: Optional[str] = None          # 'too_early' | 'good_timing' | 'too_late'
+    breaksFeedback: Optional[str] = None          # 'too_many' | 'just_right' | 'too_few'
 
 
 class ReflectionOut(ReflectionIn):
@@ -172,6 +176,68 @@ async def create_reflection(body: ReflectionIn):
     record["serverSavedAt"] = datetime.now(timezone.utc).isoformat() + "Z"
     db = get_db()
     await db.collection(COLLECTION).document(record["id"]).set(record)
+
+    # ── Delayed RL bandit update ──────────────────────────────────────────────
+    # The productivity score (+ MCQ answers) is a delayed reward: the user is
+    # telling us how well the *placed* slot actually worked out, beyond just
+    # "accepted". Reconstruct a context vector from the session's date/time
+    # data and feed it to the bandit so it can learn timing and length patterns.
+    if _RL_AVAILABLE and _user_profile is not None:
+        try:
+            from calcoach.LLM_integration.reward_handler import compute_productivity_reward
+            from calcoach.models import Block, CandidateSchedule, TaskRequest
+            from datetime import datetime as _dt, time as _time_cls
+
+            # Map productivity + MCQ → scalar reward
+            delayed_reward = compute_productivity_reward(
+                body.productivity,
+                body.sessionLengthFeedback,
+                body.timingFeedback,
+                body.breaksFeedback,
+            )
+
+            # Reconstruct session geometry
+            date_obj = _dt.strptime(body.date, "%Y-%m-%d")
+            day_name = date_obj.strftime("%A")   # e.g. "Monday"
+            sh, sm = [int(x) for x in body.startTime.split(":")]
+            eh_raw, em_raw = [int(x) for x in body.endTime.split(":")]
+            dur = max(1, eh_raw * 60 + em_raw - sh * 60 - sm)
+            eh = (sh * 60 + sm + dur) // 60 % 24
+            em = (sm + dur) % 60
+
+            block = Block(
+                day=day_name,
+                start=_time_cls(sh, sm),
+                end=_time_cls(eh, em),
+                duration_minutes=dur,
+            )
+            cand = CandidateSchedule(
+                blocks=[block],
+                total_minutes=dur,
+                strategy="reflection_update",
+            )
+            task = TaskRequest(
+                task_name="reflection_task",
+                total_duration_minutes=dur,
+                task_type="other",
+                deadline_day=day_name,
+                preferred_chunk_minutes=dur,
+                min_chunk_minutes=15,
+                max_chunk_minutes=max(dur, 120),
+            )
+            context = _extract(cand, _user_profile, task, {})
+            _bandit.update(context, delayed_reward, _user_profile)
+            if _current_user_email:
+                await _save_bandit_state(_current_user_email)
+            print(
+                f"[RL] Delayed reward: productivity={body.productivity}/5 "
+                f"length={body.sessionLengthFeedback} timing={body.timingFeedback} "
+                f"breaks={body.breaksFeedback} → reward={delayed_reward:.3f}"
+            )
+        except Exception as _rl_err:
+            print(f"[RL] Failed to apply delayed productivity reward: {_rl_err}")
+    # ─────────────────────────────────────────────────────────────────────────
+
     return record
 
 
