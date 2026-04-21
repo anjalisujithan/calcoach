@@ -6,7 +6,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from routes.auth import router as auth_router
 from routes.calendar import router as calendar_router
 
-load_dotenv()
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
