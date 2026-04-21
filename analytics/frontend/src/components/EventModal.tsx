@@ -10,6 +10,24 @@ const FACES = [
   { score: 5, emoji: '😄', label: 'Very productive' },
 ];
 
+const SESSION_LENGTH_OPTIONS: { value: 'too_short' | 'just_right' | 'too_long'; label: string }[] = [
+  { value: 'too_short', label: 'Too short' },
+  { value: 'just_right', label: 'Just right' },
+  { value: 'too_long', label: 'Too long' },
+];
+
+const TIMING_OPTIONS: { value: 'too_early' | 'good_timing' | 'too_late'; label: string }[] = [
+  { value: 'too_early', label: 'Too early' },
+  { value: 'good_timing', label: 'Good timing' },
+  { value: 'too_late', label: 'Too late' },
+];
+
+const BREAKS_OPTIONS: { value: 'too_many' | 'just_right' | 'too_few'; label: string }[] = [
+  { value: 'too_many', label: 'Too many breaks' },
+  { value: 'just_right', label: 'Just right' },
+  { value: 'too_few', label: 'Too few breaks' },
+];
+
 const COLOR_PALETTE = [
   '#4285f4', '#ea4335', '#34a853', '#fbbc04',
   '#9c27b0', '#00acc1', '#e91e63', '#ff6d00',
@@ -59,6 +77,9 @@ export default function EventModal({ session, reflections, categories = [], onAd
   const [editSaved, setEditSaved] = useState(false);
 
   const [productivity, setProductivity] = useState<number | null>(null);
+  const [sessionLength, setSessionLength] = useState<'too_short' | 'just_right' | 'too_long' | null>(null);
+  const [timing, setTiming] = useState<'too_early' | 'good_timing' | 'too_late' | null>(null);
+  const [breaks, setBreaks] = useState<'too_many' | 'just_right' | 'too_few' | null>(null);
   const [reflText, setReflText] = useState('');
   const [reflSaved, setReflSaved] = useState(false);
 
@@ -76,6 +97,9 @@ export default function EventModal({ session, reflections, categories = [], onAd
     setNewCatInput('');
     setEditSaved(false);
     setProductivity(null);
+    setSessionLength(null);
+    setTiming(null);
+    setBreaks(null);
     setReflText('');
     setReflSaved(false);
   }
@@ -100,7 +124,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
   }
 
   function handleSaveReflection() {
-    if (!productivity || !reflText.trim()) return;
+    if (!productivity) return;
     onSaveReflection({
       sessionId: session.id,
       title: session.title,
@@ -110,10 +134,16 @@ export default function EventModal({ session, reflections, categories = [], onAd
       endTime,
       productivity,
       reflectionText: reflText.trim(),
+      sessionLengthFeedback: sessionLength ?? undefined,
+      timingFeedback: timing ?? undefined,
+      breaksFeedback: breaks ?? undefined,
     });
     setReflSaved(true);
     setReflText('');
     setProductivity(null);
+    setSessionLength(null);
+    setTiming(null);
+    setBreaks(null);
     setTimeout(() => setReflSaved(false), 2000);
   }
 
@@ -296,16 +326,73 @@ export default function EventModal({ session, reflections, categories = [], onAd
             </div>
             {productivity !== null && <div className="productivity-label">{FACES[productivity - 1].label}</div>}
 
+            {/* MCQ: session length */}
+            <div style={{ fontSize: '0.82rem', color: '#555', margin: '0.75rem 0 0.35rem' }}>Was the session length right?</div>
+            <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.25rem' }}>
+              {SESSION_LENGTH_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => setSessionLength(sessionLength === opt.value ? null : opt.value)}
+                  style={{
+                    padding: '0.25rem 0.6rem', borderRadius: '999px', fontSize: '0.78rem',
+                    cursor: 'pointer', fontWeight: 500,
+                    border: sessionLength === opt.value ? '1.5px solid #4285f4' : '1.5px solid #ccc',
+                    background: sessionLength === opt.value ? '#e8f0fe' : '#f5f5f5',
+                    color: sessionLength === opt.value ? '#1a73e8' : '#555',
+                  }}
+                >{opt.label}</button>
+              ))}
+            </div>
+
+            {/* MCQ: timing */}
+            <div style={{ fontSize: '0.82rem', color: '#555', margin: '0.6rem 0 0.35rem' }}>Was the timing right?</div>
+            <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.25rem' }}>
+              {TIMING_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => setTiming(timing === opt.value ? null : opt.value)}
+                  style={{
+                    padding: '0.25rem 0.6rem', borderRadius: '999px', fontSize: '0.78rem',
+                    cursor: 'pointer', fontWeight: 500,
+                    border: timing === opt.value ? '1.5px solid #4285f4' : '1.5px solid #ccc',
+                    background: timing === opt.value ? '#e8f0fe' : '#f5f5f5',
+                    color: timing === opt.value ? '#1a73e8' : '#555',
+                  }}
+                >{opt.label}</button>
+              ))}
+            </div>
+
+            {/* MCQ: breaks */}
+            <div style={{ fontSize: '0.82rem', color: '#555', margin: '0.6rem 0 0.35rem' }}>How were the breaks?</div>
+            <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.25rem' }}>
+              {BREAKS_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => setBreaks(breaks === opt.value ? null : opt.value)}
+                  style={{
+                    padding: '0.25rem 0.6rem', borderRadius: '999px', fontSize: '0.78rem',
+                    cursor: 'pointer', fontWeight: 500,
+                    border: breaks === opt.value ? '1.5px solid #4285f4' : '1.5px solid #ccc',
+                    background: breaks === opt.value ? '#e8f0fe' : '#f5f5f5',
+                    color: breaks === opt.value ? '#1a73e8' : '#555',
+                  }}
+                >{opt.label}</button>
+              ))}
+            </div>
+
+            {/* Free text — optional */}
+            <div style={{ fontSize: '0.82rem', color: '#555', margin: '0.6rem 0 0.35rem' }}>
+              Notes <span style={{ color: '#aaa', fontWeight: 400 }}>(optional)</span>
+            </div>
             <textarea
               className="rp-textarea"
-              style={{ marginTop: '0.75rem' }}
               value={reflText}
               onChange={e => setReflText(e.target.value)}
               placeholder="How did it go? What did you accomplish? Any blockers?"
-              rows={4}
+              rows={3}
             />
 
-            <button className="rp-save-btn" onClick={handleSaveReflection} disabled={!productivity || !reflText.trim()}>
+            <button className="rp-save-btn" onClick={handleSaveReflection} disabled={!productivity}>
               Save Reflection
             </button>
             {reflSaved && <div className="rp-saved-confirm">✓ Reflection saved!</div>}
@@ -322,7 +409,14 @@ export default function EventModal({ session, reflections, categories = [], onAd
                       <span className="rp-history-score">Productivity: {r.productivity}/5</span>
                       <span className="rp-history-date">{new Date(r.savedAt).toLocaleString()}</span>
                     </div>
-                    <div className="rp-history-text">{r.reflectionText}</div>
+                    {(r.sessionLengthFeedback || r.timingFeedback || r.breaksFeedback) && (
+                      <div style={{ fontSize: '0.75rem', color: '#888', marginTop: '0.2rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                        {r.sessionLengthFeedback && <span>Length: {r.sessionLengthFeedback.replace(/_/g, ' ')}</span>}
+                        {r.timingFeedback && <span>Timing: {r.timingFeedback.replace(/_/g, ' ')}</span>}
+                        {r.breaksFeedback && <span>Breaks: {r.breaksFeedback.replace(/_/g, ' ')}</span>}
+                      </div>
+                    )}
+                    {r.reflectionText && <div className="rp-history-text">{r.reflectionText}</div>}
                   </div>
                 ))}
               </div>
