@@ -1,4 +1,5 @@
 from datetime import datetime, timezone, timedelta
+from typing import Optional
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -16,11 +17,21 @@ def get_calendar_service(tokens: dict):
     return GoogleCalendarService(creds)
 
 
+# Default full sync window: ~3 years each way.
+_DEFAULT_SYNC_DAYS_BACK = 1095
+_DEFAULT_SYNC_DAYS_AHEAD = 1095
+
+
 class GoogleCalendarService:
     def __init__(self, creds: Credentials):
         self.service = build("calendar", "v3", credentials=creds)
 
-    def list_upcoming_events(self, days_back: int = 1095, days_ahead: int = 1095, max_results: int = 2500) -> list:
+    def list_upcoming_events(
+        self,
+        days_back: int = _DEFAULT_SYNC_DAYS_BACK,
+        days_ahead: int = _DEFAULT_SYNC_DAYS_AHEAD,
+        max_results: int = 2500,
+    ) -> list:
         now = datetime.now(timezone.utc)
         time_min = (now - timedelta(days=days_back)).isoformat()
         time_max = (now + timedelta(days=days_ahead)).isoformat()
@@ -37,6 +48,29 @@ class GoogleCalendarService:
             .execute()
         )
         return result.get("items", [])
+
+    def list_events_between(self, time_min: str, time_max: str, max_results: int = 500) -> list:
+        result = (
+            self.service.events()
+            .list(
+                calendarId="primary",
+                timeMin=time_min,
+                timeMax=time_max,
+                maxResults=max_results,
+                singleEvents=True,
+                orderBy="startTime",
+            )
+            .execute()
+        )
+        return result.get("items", [])
+
+    def get_event(self, event_id: str) -> Optional[dict]:
+        try:
+            return self.service.events().get(calendarId="primary", eventId=event_id).execute()
+        except HttpError as e:
+            if getattr(e.resp, "status", None) in (404, 410):
+                return None
+            raise
 
     def get_busy_times(self, days_ahead: int = 7) -> list:
         now = datetime.now(timezone.utc)

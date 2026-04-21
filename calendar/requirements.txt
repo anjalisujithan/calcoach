@@ -5,3 +5,4 @@ starlette
 google-auth-oauthlib
 google-api-python-client
 pydantic
+firebase-admin
