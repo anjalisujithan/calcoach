@@ -4,7 +4,8 @@ import secrets
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from google_auth_oauthlib.flow import Flow
-from firestore_client import save_calendar_tokens
+from firestore_client import save_calendar_tokens, save_shared_availability_snapshot
+from services.google_calendar import get_calendar_service
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 CLIENT_SECRETS_FILE = "client_secret_372533672163-9usane5tl6oqvv04n26vo6arsc61igpp.apps.googleusercontent.com.json"
@@ -65,6 +66,21 @@ def callback(request: Request, code: str, state: str):
     email = request.session.get("user_email", "")
     if email:
         save_calendar_tokens(email, tokens)
+        try:
+            service = get_calendar_service(tokens)
+            events = service.list_upcoming_events()
+            sessions = [
+                {
+                    "id": e.get("id", ""),
+                    "summary": e.get("summary", ""),
+                    "start": e.get("start", {}),
+                    "end": e.get("end", {}),
+                }
+                for e in events
+            ]
+            save_shared_availability_snapshot(email, sessions)
+        except Exception as e:
+            print(f"[calendar] Failed to sync shared availability on login for {email}: {e}")
 
     return RedirectResponse("http://localhost:3000")
 
