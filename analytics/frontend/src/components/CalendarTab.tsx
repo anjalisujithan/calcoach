@@ -68,6 +68,7 @@ function sessionToPayload(s: Omit<Session, 'id'>) {
 interface Props {
   reflections: ReflectionEntry[];
   onSaveReflection: (entry: Omit<ReflectionEntry, 'id' | 'savedAt'>) => void;
+  onSessionsChange?: (sessions: Session[]) => void;
 }
 
 const DEFAULT_CATEGORIES = ['Work', 'Research', 'Classes', 'Personal'];
@@ -80,7 +81,7 @@ function loadCategories(): string[] {
   return DEFAULT_CATEGORIES;
 }
 
-export default function CalendarTab({ reflections, onSaveReflection }: Props) {
+export default function CalendarTab({ reflections, onSaveReflection, onSessionsChange }: Props) {
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
   const [chatHistory, setChatHistory] = useState<{ role: string; text: string }[]>([]);
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
@@ -105,6 +106,8 @@ export default function CalendarTab({ reflections, onSaveReflection }: Props) {
       return next;
     });
   }
+
+  useEffect(() => { onSessionsChange?.(sessions); }, [sessions, onSessionsChange]);
 
   const localIds = useRef<Set<string>>(new Set());
   /** groupId → { slotIndex, events[] } for /feedback + multi-block GCal create */
