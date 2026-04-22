@@ -56,6 +56,20 @@ from typing import List, Optional, Tuple
 
 import json
 import os
+import re
+
+try:
+    from google.oauth2.credentials import Credentials as _GCreds
+    from googleapiclient.discovery import build as _gcal_build
+    _GCAL_AVAILABLE = True
+except ImportError:
+    _GCAL_AVAILABLE = False
+
+_AT_EMAIL_RE = re.compile(r'@([\w.+\-]+@[\w.\-]+\.\w{2,})')
+_SCHED_INTENT_RE = re.compile(
+    r"\b(schedule|add|book|create|set up|block out|find time for)\b",
+    re.IGNORECASE,
+)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -80,6 +94,7 @@ app.add_middleware(
 
 COLLECTION = "reflections"
 USERS_COLLECTION = "users"
+SHARED_AVAILABILITY_COLLECTION = "shared_availability"
 
 
 # ── Bandit persistence helpers ────────────────────────────────────────────────
@@ -122,90 +137,6 @@ async def _load_bandit_state(email: str) -> None:
         print(f"[RL] No existing bandit state for {email}, starting fresh")
     except Exception as e:
         print(f"[RL] Failed to load bandit state: {e}")
-
-
-# ── User summary helpers ──────────────────────────────────────────────────────
-
-async def _update_user_summary(uid: str) -> None:
-    """Recompute and store aggregated metrics for a user from their reflections."""
-    if not uid:
-        return
-    try:
-        db = get_db()
-        docs = [d.to_dict() async for d in db.collection(COLLECTION).where("userId", "==", uid).stream()]
-        if not docs:
-            return
-
-        total_sessions = len(docs)
-        total_minutes = 0
-        by_hour: dict[int, list[float]] = {}
-        by_dow: dict[int, list[float]] = {}
-        by_category: dict[str, dict] = {}
-        by_subject: dict[str, dict] = {}
-
-        for r in docs:
-            try:
-                sh, sm = [int(x) for x in r["startTime"].split(":")]
-                eh, em = [int(x) for x in r["endTime"].split(":")]
-                dur = max(0, eh * 60 + em - sh * 60 - sm)
-            except Exception:
-                dur = 0
-            total_minutes += dur
-            prod = float(r.get("productivity", 0))
-
-            by_hour.setdefault(sh, []).append(prod)
-
-            from datetime import date as _date
-            try:
-                dow = _date.fromisoformat(r["date"]).weekday()  # 0=Mon
-            except Exception:
-                dow = 0
-            by_dow.setdefault(dow, []).append(prod)
-
-            cat = r.get("category") or "Uncategorized"
-            if cat not in by_category:
-                by_category[cat] = {"total_minutes": 0, "session_count": 0, "productivity_sum": 0.0}
-            by_category[cat]["total_minutes"] += dur
-            by_category[cat]["session_count"] += 1
-            by_category[cat]["productivity_sum"] += prod
-
-            title = r.get("title") or "(No title)"
-            if title not in by_subject:
-                by_subject[title] = {"total_minutes": 0, "session_count": 0, "productivity_sum": 0.0}
-            by_subject[title]["total_minutes"] += dur
-            by_subject[title]["session_count"] += 1
-            by_subject[title]["productivity_sum"] += prod
-
-        DOW_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-        summary = {
-            "total_sessions": total_sessions,
-            "total_minutes": total_minutes,
-            "by_hour": [
-                {"hour": h, "avg_productivity": round(sum(v)/len(v), 3), "session_count": len(v)}
-                for h, v in sorted(by_hour.items())
-            ],
-            "by_dow": [
-                {"day_index": d, "day_name": DOW_NAMES[d], "avg_productivity": round(sum(v)/len(v), 3), "session_count": len(v)}
-                for d, v in sorted(by_dow.items())
-            ],
-            "by_category": sorted([
-                {"category": c, "total_minutes": s["total_minutes"], "session_count": s["session_count"],
-                 "avg_productivity": round(s["productivity_sum"] / s["session_count"], 3)}
-                for c, s in by_category.items()
-            ], key=lambda x: -x["total_minutes"]),
-            "top_subjects": sorted([
-                {"title": t, "total_minutes": s["total_minutes"], "session_count": s["session_count"],
-                 "avg_productivity": round(s["productivity_sum"] / s["session_count"], 3)}
-                for t, s in by_subject.items()
-            ], key=lambda x: -x["total_minutes"])[:12],
-            "last_updated": datetime.now(timezone.utc).isoformat() + "Z",
-        }
-
-        doc_ref = db.collection(USERS_COLLECTION).document(uid)
-        await doc_ref.set({"user_summary": summary}, merge=True)
-    except Exception as e:
-        print(f"[summary] Failed to update user_summary for {uid}: {e}")
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -345,23 +276,6 @@ async def delete_reflection(reflection_id: str):
         raise HTTPException(404, "Reflection not found")
     await doc_ref.delete()
     return {"ok": True}
-
-
-@app.get("/analytics/{user_id}")
-async def get_analytics(user_id: str):
-    """Return the precomputed user_summary for a user (keyed by Firebase UID)."""
-    db = get_db()
-    doc = await db.collection(USERS_COLLECTION).document(user_id).get()
-    if not doc.exists:
-        raise HTTPException(404, "User not found")
-    data = doc.to_dict() or {}
-    summary = data.get("user_summary")
-    if not summary:
-        # Compute on-demand if never cached yet
-        await _update_user_summary(user_id)
-        doc = await db.collection(USERS_COLLECTION).document(user_id).get()
-        summary = (doc.to_dict() or {}).get("user_summary")
-    return summary or {}
 
 
 @app.get("/users", response_model=List[UserOut])
@@ -651,6 +565,7 @@ class ChatMessage(BaseModel):
     history: List[HistoryMessage] = []
     sessions: List[dict] = []
     reflections: List[dict] = []
+    requester_email: str = ""
 
 
 class ChatResponse(BaseModel):
@@ -742,6 +657,20 @@ Always respond with valid JSON in exactly this format:
   "events_to_create": []
 }}
 
+ONLY fill "candidate_slots" when the user's CURRENT message explicitly asks to SCHEDULE, ADD, BOOK, or CREATE a new calendar event — i.e. the message contains a clear intent to place something new on the calendar (words like "schedule", "add", "book", "create", "set up", "block out", "find time for"). Conversational messages, follow-up questions, clarifications, and reactions to previously shown options do NOT trigger scheduling — respond to those conversationally only.
+
+When filling "candidate_slots" (new scheduling request only):
+- Set "reply" to a brief sentence (e.g. "Here are 3 options for your CS homework:")
+- Provide exactly 3 alternative scheduling OPTIONS in "candidate_slots" — different strategies/days for the same task. The server validates against BUSY times: every block must lie entirely inside a FREE window (see follow-up messages if a revision is requested).
+- SINGLE continuous block per option: use top-level fields only: title, description, date (yyyy-MM-dd), startHour (0-23), startMin (0 or 30), durationMins, reasoning (1 sentence)
+- MULTI-BLOCK one option (e.g. 4 hours as four 1-hour sessions): ONE object with the same title/description/reasoning at the top level, plus a "blocks" array. Each block must have: date, startHour, startMin, durationMins (optional title/description override per block). Do NOT split one option into multiple top-level candidate_slots entries.
+- DURATION RULE (hard): for every option, the sum of all blocks' durationMins MUST equal the total time the user asked to schedule. If the user asks for 2 hours, every option must total exactly 120 minutes. This is non-negotiable — never under- or over-schedule.
+- Leave "events_to_create" as an empty array
+
+When NOT scheduling (questions, advice, follow-up chat, reactions to previous suggestions, general conversation):
+- Set "reply" to your answer
+- Leave BOTH "candidate_slots" AND "events_to_create" as empty arrays
+
 === SCHEDULING REQUESTS — READ THIS CAREFULLY ===
 
 When the user asks you to SCHEDULE, ADD, or CREATE a task, you MUST collect two pieces of information before generating any candidate_slots:
@@ -778,6 +707,89 @@ DURATION RULE (hard):
 - Leave both candidate_slots and events_to_create as empty arrays
 
 Do not include any text outside the JSON object."""
+
+
+def _is_scheduling_request(message: str) -> bool:
+    return bool(_SCHED_INTENT_RE.search(message or ""))
+
+
+def _sanitize_session_for_sharing(session: dict) -> Optional[dict]:
+    date = session.get("date")
+    if not date:
+        return None
+    try:
+        return {
+            "title": str(session.get("title", "(Busy)")),
+            "date": str(date),
+            "startHour": int(session.get("startHour", 0)),
+            "startMin": int(session.get("startMin", 0)),
+            "durationMins": int(session.get("durationMins", 0)),
+        }
+    except Exception:
+        return None
+
+
+async def _save_shared_availability_snapshot(
+    owner_email: str,
+    sessions: List[dict],
+    *,
+    source: str,
+    peer_email: Optional[str] = None,
+) -> None:
+    owner_email = (owner_email or "").strip().lower()
+    if not owner_email:
+        return
+    clean_sessions = []
+    for s in sessions:
+        if isinstance(s, dict):
+            sanitized = _sanitize_session_for_sharing(s)
+            if sanitized:
+                clean_sessions.append(sanitized)
+    if not clean_sessions:
+        return
+    try:
+        db = get_db()
+        now = datetime.now(timezone.utc)
+        payload = {
+            "owner_email": owner_email,
+            "source": source,
+            "peer_email": (peer_email or "").strip().lower(),
+            "sessions": clean_sessions[:500],
+            "updated_at": now.isoformat().replace("+00:00", "Z"),
+        }
+        await db.collection(SHARED_AVAILABILITY_COLLECTION).document(owner_email).set(payload, merge=True)
+        print(f"[joint] Saved shared availability snapshot for {owner_email} ({len(clean_sessions)} sessions)")
+    except Exception as e:
+        print(f"[joint] Failed to save shared availability snapshot for {owner_email}: {e}")
+
+
+async def _load_shared_availability_snapshot(owner_email: str, *, max_age_minutes: int = 20) -> List[dict]:
+    owner_email = (owner_email or "").strip().lower()
+    if not owner_email:
+        return []
+    try:
+        db = get_db()
+        doc = await db.collection(SHARED_AVAILABILITY_COLLECTION).document(owner_email).get()
+        if not doc.exists:
+            return []
+        data = doc.to_dict() or {}
+        updated_at_raw = data.get("updated_at")
+        if not updated_at_raw:
+            return []
+        updated_at = datetime.fromisoformat(str(updated_at_raw).replace("Z", "+00:00"))
+        age_minutes = (datetime.now(timezone.utc) - updated_at).total_seconds() / 60.0
+        if age_minutes > max_age_minutes:
+            return []
+        out = []
+        for s in data.get("sessions", []):
+            if isinstance(s, dict):
+                sanitized = _sanitize_session_for_sharing(s)
+                if sanitized:
+                    out.append(sanitized)
+        return out
+    except Exception as e:
+        print(f"[joint] Failed to load shared availability snapshot for {owner_email}: {e}")
+        return []
 
 
 # ── RL helpers ────────────────────────────────────────────────────────────────
@@ -1159,7 +1171,12 @@ def _candidate_sort_key(c: CandidateSchedule) -> tuple:
     return tuple(sorted((b.day, b.start.hour, b.start.minute, b.duration_minutes) for b in c.blocks))
 
 
-def _rank_slots(bundles: List[dict], sessions: List[dict]) -> List[dict]:
+def _rank_slots(
+    bundles: List[dict],
+    sessions: List[dict],
+    attendee_profile=None,
+    attendee_sessions: Optional[List[dict]] = None,
+) -> List[dict]:
     """Rank scheduling bundles via LinUCB. Returns bundles in ranked order. Falls back on error."""
     if not _RL_AVAILABLE or len(bundles) < 2:
         return bundles
@@ -1198,7 +1215,15 @@ def _rank_slots(bundles: List[dict], sessions: List[dict]) -> List[dict]:
             max_chunk_minutes=max(max_chunk, 120),
         )
 
-        ranked_candidates = _bandit.rank(valid_candidates, _user_profile, task, calendar_json)
+        if attendee_profile is not None and attendee_sessions is not None:
+            attendee_calendar_json = _sessions_to_calendar_json(attendee_sessions)
+            ranked_candidates = _bandit.rank_joint(
+                valid_candidates, _user_profile, attendee_profile, task,
+                calendar_json, attendee_calendar_json,
+            )
+            print(f"[RL] Joint ranking for {attendee_profile.user_id}")
+        else:
+            ranked_candidates = _bandit.rank(valid_candidates, _user_profile, task, calendar_json)
 
         bundle_map: dict[tuple, dict] = {}
         for b in valid_bundles:
@@ -1376,11 +1401,84 @@ async def chat(body: ChatMessage):
 
     client = AsyncGroq(api_key=api_key)
 
+    # ── Joint scheduling: detect @email mention and load attendee data ─────────
+    attendee_email = _extract_attendee_email(body.message)
+    requester_email = (body.requester_email or "").strip().lower()
+    is_joint_scheduling = bool(attendee_email) and _is_scheduling_request(body.message)
+    requester_sessions: List[dict] = list(body.sessions)
+    attendee_profile = None
+    attendee_sessions: List[dict] = []
+
+    # For explicit joint scheduling, force a requester-side resync from Google when possible.
+    if is_joint_scheduling and requester_email:
+        from firestore_client import get_calendar_tokens
+        requester_tokens = await get_calendar_tokens(requester_email)
+        if requester_tokens:
+            fresh_requester_sessions = _fetch_attendee_sessions(requester_tokens)
+            if fresh_requester_sessions:
+                requester_sessions = fresh_requester_sessions
+                print(
+                    f"[joint] Resynced requester calendar from Google: "
+                    f"{requester_email} ({len(requester_sessions)} sessions)"
+                )
+                await _save_shared_availability_snapshot(
+                    requester_email,
+                    requester_sessions,
+                    source="requester_google_resync",
+                    peer_email=attendee_email,
+                )
+        # Fallback: still save latest client-provided schedule projection for requester.
+        if requester_sessions:
+            await _save_shared_availability_snapshot(
+                requester_email,
+                requester_sessions,
+                source="requester_chat_context",
+                peer_email=attendee_email,
+            )
+
+    if attendee_email:
+        print(f"[joint] Detected attendee: {attendee_email}")
+        attendee_profile = await _load_attendee_profile(attendee_email)
+        if attendee_profile:
+            from firestore_client import get_calendar_tokens
+            tokens = await get_calendar_tokens(attendee_email)
+            if tokens:
+                attendee_sessions = _fetch_attendee_sessions(tokens)
+                print(f"[joint] Loaded {len(attendee_sessions)} sessions for {attendee_email}")
+                if is_joint_scheduling and attendee_sessions:
+                    await _save_shared_availability_snapshot(
+                        attendee_email,
+                        attendee_sessions,
+                        source="attendee_google_tokens",
+                        peer_email=requester_email,
+                    )
+            else:
+                if is_joint_scheduling:
+                    attendee_sessions = await _load_shared_availability_snapshot(attendee_email)
+                    if attendee_sessions:
+                        print(
+                            f"[joint] No calendar tokens for {attendee_email}; "
+                            f"using shared snapshot ({len(attendee_sessions)} sessions)"
+                        )
+                    else:
+                        print(f"[joint] No calendar tokens/snapshot for {attendee_email} — using profile only")
+                else:
+                    print(f"[joint] No calendar tokens for {attendee_email} — using profile only")
+        else:
+            print(f"[joint] {attendee_email} is not a CalCoach user — ignoring mention")
+            attendee_email = None
+
+    # Combined sessions = requesting user + attendee (used for clash detection + LLM prompt)
+    combined_sessions = requester_sessions + attendee_sessions
+
     history = list(body.history)
     if len(history) > HISTORY_THRESHOLD:
         history = await _compress_history(client, history)
 
-    system_prompt = _build_system_prompt(body.sessions, body.reflections)
+    system_prompt = _build_system_prompt(combined_sessions, body.reflections)
+    if attendee_email and attendee_sessions:
+        # Only hint the LLM when we actually have the attendee's calendar data merged in
+        system_prompt += f"\n\nNOTE: This is a joint scheduling request with {attendee_email}. Their busy blocks are already included above — all proposed slots must fit within the free windows shown."
     messages = [{"role": "system", "content": system_prompt}]
     for h in history:
         messages.append({"role": h.role if h.role != "system" else "user", "content": h.text})
@@ -1415,29 +1513,36 @@ async def chat(body: ChatMessage):
             if bundles_in and _RL_AVAILABLE and ScheduleValidator is not None:
                 try:
                     viable, reply, _ = await _repair_scheduling_until_viable(
-                        client, messages, body.sessions, bundles_in, raw, parsed
+                        client, messages, combined_sessions, bundles_in, raw, parsed
                     )
-                    ranked_bundles = _rank_slots(viable, body.sessions)
+                    ranked_bundles = _rank_slots(
+                        viable, requester_sessions,
+                        attendee_profile=attendee_profile,
+                        attendee_sessions=attendee_sessions if attendee_sessions else None,
+                    )
                     ranked_bundles = ranked_bundles[:TARGET_VIABLE_SUGGESTIONS]
                     if len(ranked_bundles) < TARGET_VIABLE_SUGGESTIONS:
                         reply = (
-                            f"{reply}\n\n_Note: Only {len(ranked_bundles)} clash-free option(s) fit your "
-                            "calendar (free time + work rules) after validation._"
+                            f"{reply}\n\n_Note: Only {len(ranked_bundles)} clash-free option(s) fit "
+                            + ("both calendars" if attendee_email else "your calendar")
+                            + " after validation._"
                         )
                 except Exception as repair_err:
                     import traceback
                     print(f"[chat] repair/validation error, falling back to direct ranking: {repair_err}")
                     traceback.print_exc()
-                    ranked_bundles = _rank_slots(bundles_in, body.sessions)
+                    ranked_bundles = _rank_slots(
+                        bundles_in, requester_sessions,
+                        attendee_profile=attendee_profile,
+                        attendee_sessions=attendee_sessions if attendee_sessions else None,
+                    )
                     ranked_bundles = ranked_bundles[:TARGET_VIABLE_SUGGESTIONS]
             else:
-                ranked_bundles = _rank_slots(bundles_in, body.sessions) if bundles_in else []
+                ranked_bundles = _rank_slots(bundles_in, requester_sessions) if bundles_in else []
                 ranked_bundles = ranked_bundles[:TARGET_VIABLE_SUGGESTIONS]
 
-            # Final clash filter — runs regardless of which code path produced ranked_bundles
-            # (repair loop, fallback, or RL-disabled).  Ensures no overlapping slot ever
-            # reaches the frontend.
-            _date_busy = _sessions_to_date_busy(body.sessions)
+            # Final clash filter against both users' events
+            _date_busy = _sessions_to_date_busy(combined_sessions)
             pre_filter_count = len(ranked_bundles)
             ranked_bundles = [
                 b for b in ranked_bundles

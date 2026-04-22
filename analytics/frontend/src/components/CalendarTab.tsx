@@ -10,13 +10,15 @@ const ANALYTICS_API = 'http://localhost:8001';
 let msgId = 0;
 const mkId = () => String(++msgId);
 
-const INITIAL_MESSAGES: Message[] = [
-  {
-    id: mkId(),
-    role: 'assistant',
-    text: "Hi! I'm CalCoach. Share your tasks and goals and I'll help generate an optimized schedule for your week or answer your questions!",
-  },
-];
+function getInitialMessages(): Message[] {
+  return [
+    {
+      id: mkId(),
+      role: 'assistant',
+      text: "Hi! I'm CalCoach. Share your tasks and goals and I'll help generate an optimized schedule for your week or answer your questions!",
+    },
+  ];
+}
 
 const GCAL_COLORS: Record<string, string> = {
   '1':  '#7986cb',
@@ -69,6 +71,7 @@ interface Props {
   reflections: ReflectionEntry[];
   onSaveReflection: (entry: Omit<ReflectionEntry, 'id' | 'savedAt'>) => void;
   onSessionsChange?: (sessions: Session[]) => void;
+  userEmail: string;
 }
 
 const DEFAULT_CATEGORIES = ['Work', 'Research', 'Classes', 'Personal'];
@@ -81,9 +84,11 @@ function loadCategories(): string[] {
   return DEFAULT_CATEGORIES;
 }
 
-export default function CalendarTab({ reflections, onSaveReflection, onSessionsChange }: Props) {
-  const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
+export default function CalendarTab({ reflections, onSaveReflection, onSessionsChange, userEmail }: Props) {
+  const [messages, setMessages] = useState<Message[]>(getInitialMessages());
   const [chatHistory, setChatHistory] = useState<{ role: string; text: string }[]>([]);
+  const [chatOpen, setChatOpen] = useState(true);
+  const [chatLoading, setChatLoading] = useState(false);
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -110,6 +115,9 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   useEffect(() => { onSessionsChange?.(sessions); }, [sessions, onSessionsChange]);
 
   const localIds = useRef<Set<string>>(new Set());
+  const inFlightController = useRef<AbortController | null>(null);
+  const inFlightTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortReason = useRef<'user' | 'timeout' | null>(null);
   /** groupId → { slotIndex, events[] } for /feedback + multi-block GCal create */
   const pendingSlotMap = useRef<Map<string, { slotIndex: number; events: any[] }>>(new Map());
   /** pending block session id → groupId */
@@ -208,17 +216,57 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
     setSelectedSessionId(null);
   }
 
+  function clearPendingSuggestions() {
+    pendingSlotMap.current.clear();
+    pendingSessionToGroup.current.clear();
+    setSessions(prev => prev.filter(s => !s.pending));
+  }
+
+  function clearInFlightRequest() {
+    if (inFlightTimeout.current) {
+      clearTimeout(inFlightTimeout.current);
+      inFlightTimeout.current = null;
+    }
+    inFlightController.current = null;
+    abortReason.current = null;
+    setChatLoading(false);
+  }
+
+  function handleStopChat() {
+    if (!inFlightController.current) return;
+    abortReason.current = 'user';
+    inFlightController.current.abort();
+  }
+
+  function handleRestartChat() {
+    handleStopChat();
+    clearPendingSuggestions();
+    setChatHistory([]);
+    setMessages(getInitialMessages());
+  }
+
   async function handleSend(text: string) {
+    if (chatLoading) return;
     const userMsg: Message = { id: mkId(), role: 'user', text };
     const thinkingMsg: Message = { id: mkId(), role: 'assistant', text: '…' };
     setMessages(m => [...m, userMsg, thinkingMsg]);
+
+    const controller = new AbortController();
+    inFlightController.current = controller;
+    setChatLoading(true);
+    inFlightTimeout.current = setTimeout(() => {
+      abortReason.current = 'timeout';
+      controller.abort();
+    }, 30_000);
 
     try {
       const res = await fetch(`${ANALYTICS_API}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           message: text,
+          requester_email: userEmail,
           history: chatHistory,
           sessions: sessions.filter(s => !s.pending).map(({ title, date, startHour, startMin, durationMins }) => ({
             title, date, startHour, startMin, durationMins,
@@ -228,6 +276,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           })),
         }),
       });
+      clearInFlightRequest();
       const data = await res.json();
       const reply = data.reply ?? 'Sorry, something went wrong.';
       setMessages(m => m.map(msg => msg.id === thinkingMsg.id ? { ...msg, text: reply } : msg));
@@ -286,8 +335,15 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           });
         }
       }
-    } catch {
-      setMessages(m => m.map(msg => msg.id === thinkingMsg.id ? { ...msg, text: 'Error reaching CalCoach backend.' } : msg));
+    } catch (err: any) {
+      const reason = abortReason.current;
+      clearInFlightRequest();
+      const msg = err?.name === 'AbortError'
+        ? reason === 'user'
+          ? 'Stopped.'
+          : 'Request timed out (>30s). The scheduling engine may be overloaded — try again.'
+        : 'Error reaching CalCoach backend.';
+      setMessages(m => m.map(msg2 => msg2.id === thinkingMsg.id ? { ...msg2, text: msg } : msg2));
     }
   }
 
@@ -405,34 +461,62 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
         <div className="calendar-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <p style={{ marginBottom: '1rem', color: '#666' }}>Connect your Google Calendar to get started.</p>
-            <a href={`${CALENDAR_API}/auth/login`} className="btn-save" style={{ textDecoration: 'none', padding: '0.6rem 1.4rem' }}>
+            <a href={`${CALENDAR_API}/auth/login?email=${encodeURIComponent(userEmail)}`} className="btn-save" style={{ textDecoration: 'none', padding: '0.6rem 1.4rem' }}>
               Connect Google Calendar
             </a>
           </div>
         </div>
-        <ChatBar
-          headerLabel="Feedback for generated schedule"
-          placeholder="Schedule Anything"
-          messages={messages}
-          onSend={handleSend}
-        />
+        {chatOpen && (
+          <ChatBar
+            headerLabel="Feedback for generated schedule"
+            placeholder="Schedule Anything"
+            messages={messages}
+            onSend={handleSend}
+            mentionSearchEndpoint={`${ANALYTICS_API}/users/search`}
+            currentUserEmail={userEmail}
+            isLoading={chatLoading}
+            onStop={handleStopChat}
+            onReset={handleRestartChat}
+            onClose={() => setChatOpen(false)}
+          />
+        )}
       </div>
     );
   }
 
   const resyncBtn = (
-    <button
-      onClick={fetchEvents}
-      disabled={refreshing}
-      style={{
-        background: refreshing ? '#ccc' : '#4285f4',
-        color: '#fff', border: 'none', borderRadius: '6px',
-        padding: '0.4rem 1rem', fontWeight: 600,
-        cursor: refreshing ? 'not-allowed' : 'pointer', fontSize: '0.85rem',
-      }}
-    >
-      {refreshing ? '↻ Syncing…' : '↻ Resync with GCal'}
-    </button>
+    <>
+      <button
+        onClick={fetchEvents}
+        disabled={refreshing}
+        style={{
+          background: refreshing ? '#ccc' : '#4285f4',
+          color: '#fff', border: 'none', borderRadius: '6px',
+          padding: '0.4rem 1rem', fontWeight: 600,
+          cursor: refreshing ? 'not-allowed' : 'pointer', fontSize: '0.85rem',
+        }}
+      >
+        {refreshing ? '↻ Syncing…' : '↻ Resync with GCal'}
+      </button>
+      {!chatOpen && (
+        <button
+          onClick={() => setChatOpen(true)}
+          style={{
+            background: '#fff',
+            color: '#3c4043',
+            border: '1px solid #dadce0',
+            borderRadius: '6px',
+            padding: '0.4rem 0.75rem',
+            fontWeight: 600,
+            cursor: 'pointer',
+            fontSize: '0.85rem',
+          }}
+          title="Reopen chat sidebar"
+        >
+          Open Chat
+        </button>
+      )}
+    </>
   );
 
   return (
@@ -451,12 +535,20 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
         onDeleteCategory={handleDeleteCategory}
         toolbarExtra={resyncBtn}
       />
-      <ChatBar
-        headerLabel="Feedback for generated schedule"
-        placeholder="Schedule Anything"
-        messages={messages}
-        onSend={handleSend}
-      />
+      {chatOpen && (
+        <ChatBar
+          headerLabel="Feedback for generated schedule"
+          placeholder="Schedule Anything"
+          messages={messages}
+          onSend={handleSend}
+          mentionSearchEndpoint={`${ANALYTICS_API}/users/search`}
+          currentUserEmail={userEmail}
+          isLoading={chatLoading}
+          onStop={handleStopChat}
+          onReset={handleRestartChat}
+          onClose={() => setChatOpen(false)}
+        />
+      )}
       {selectedSession && (
         <EventModal
           session={selectedSession}
