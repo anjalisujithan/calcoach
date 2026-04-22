@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import CalendarTab from './components/CalendarTab';
 import AnalyticsTab from './components/AnalyticsTab';
 import AuthPage from './components/AuthPage';
 import OnboardingSurvey, { SurveyAnswers } from './components/OnboardingSurvey';
 import { ReflectionEntry } from './components/ReflectionPanel';
+import { Session } from './components/WeekCalendar';
 import { AuthProvider, useAuth } from './AuthContext';
 import './App.css';
 
@@ -18,9 +19,20 @@ function AppShell() {
   const { user, loading, signOut } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>('calendar');
   const [reflections, setReflections] = useState<ReflectionEntry[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
   const [showSurvey, setShowSurvey] = useState<boolean>(
     () => !localStorage.getItem('calcoach_survey_done')
   );
+
+  useEffect(() => {
+    if (!user) return;
+    fetch(`${API}/reflections?user_id=${encodeURIComponent(user.uid)}`)
+      .then(r => r.json())
+      .then((data: ReflectionEntry[]) => {
+        setReflections(data);
+      })
+      .catch(() => {});
+  }, [user?.uid]);
 
   function handleSurveyComplete(_answers: SurveyAnswers) {
     setShowSurvey(false);
@@ -37,6 +49,7 @@ function AppShell() {
   async function handleSaveReflection(entry: Omit<ReflectionEntry, 'id' | 'savedAt'>) {
     const newEntry: ReflectionEntry = {
       ...entry,
+      userId: user!.uid,
       id: mkId(),
       savedAt: new Date().toISOString(),
     };
@@ -76,8 +89,8 @@ function AppShell() {
         </div>
       </header>
       <main className="app-main">
-        {activeTab === 'calendar' && <CalendarTab reflections={reflections} onSaveReflection={handleSaveReflection} />}
-        {activeTab === 'analytics' && <AnalyticsTab reflections={reflections} />}
+        {activeTab === 'calendar' && <CalendarTab reflections={reflections} onSaveReflection={handleSaveReflection} onSessionsChange={setSessions} />}
+        {activeTab === 'analytics' && <AnalyticsTab reflections={reflections} sessions={sessions} userId={user.uid} userEmail={user.email ?? ''} />}
       </main>
     </div>
   );

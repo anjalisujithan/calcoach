@@ -3,6 +3,7 @@ import { Session } from './WeekCalendar';
 
 export interface ReflectionEntry {
   id: string;
+  userId?: string;      // Firebase UID — links reflection to its owner
   sessionId: string;
   title: string;
   description: string;

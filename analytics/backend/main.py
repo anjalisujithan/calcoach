@@ -124,6 +124,90 @@ async def _load_bandit_state(email: str) -> None:
         print(f"[RL] Failed to load bandit state: {e}")
 
 
+# ── User summary helpers ──────────────────────────────────────────────────────
+
+async def _update_user_summary(uid: str) -> None:
+    """Recompute and store aggregated metrics for a user from their reflections."""
+    if not uid:
+        return
+    try:
+        db = get_db()
+        docs = [d.to_dict() async for d in db.collection(COLLECTION).where("userId", "==", uid).stream()]
+        if not docs:
+            return
+
+        total_sessions = len(docs)
+        total_minutes = 0
+        by_hour: dict[int, list[float]] = {}
+        by_dow: dict[int, list[float]] = {}
+        by_category: dict[str, dict] = {}
+        by_subject: dict[str, dict] = {}
+
+        for r in docs:
+            try:
+                sh, sm = [int(x) for x in r["startTime"].split(":")]
+                eh, em = [int(x) for x in r["endTime"].split(":")]
+                dur = max(0, eh * 60 + em - sh * 60 - sm)
+            except Exception:
+                dur = 0
+            total_minutes += dur
+            prod = float(r.get("productivity", 0))
+
+            by_hour.setdefault(sh, []).append(prod)
+
+            from datetime import date as _date
+            try:
+                dow = _date.fromisoformat(r["date"]).weekday()  # 0=Mon
+            except Exception:
+                dow = 0
+            by_dow.setdefault(dow, []).append(prod)
+
+            cat = r.get("category") or "Uncategorized"
+            if cat not in by_category:
+                by_category[cat] = {"total_minutes": 0, "session_count": 0, "productivity_sum": 0.0}
+            by_category[cat]["total_minutes"] += dur
+            by_category[cat]["session_count"] += 1
+            by_category[cat]["productivity_sum"] += prod
+
+            title = r.get("title") or "(No title)"
+            if title not in by_subject:
+                by_subject[title] = {"total_minutes": 0, "session_count": 0, "productivity_sum": 0.0}
+            by_subject[title]["total_minutes"] += dur
+            by_subject[title]["session_count"] += 1
+            by_subject[title]["productivity_sum"] += prod
+
+        DOW_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+        summary = {
+            "total_sessions": total_sessions,
+            "total_minutes": total_minutes,
+            "by_hour": [
+                {"hour": h, "avg_productivity": round(sum(v)/len(v), 3), "session_count": len(v)}
+                for h, v in sorted(by_hour.items())
+            ],
+            "by_dow": [
+                {"day_index": d, "day_name": DOW_NAMES[d], "avg_productivity": round(sum(v)/len(v), 3), "session_count": len(v)}
+                for d, v in sorted(by_dow.items())
+            ],
+            "by_category": sorted([
+                {"category": c, "total_minutes": s["total_minutes"], "session_count": s["session_count"],
+                 "avg_productivity": round(s["productivity_sum"] / s["session_count"], 3)}
+                for c, s in by_category.items()
+            ], key=lambda x: -x["total_minutes"]),
+            "top_subjects": sorted([
+                {"title": t, "total_minutes": s["total_minutes"], "session_count": s["session_count"],
+                 "avg_productivity": round(s["productivity_sum"] / s["session_count"], 3)}
+                for t, s in by_subject.items()
+            ], key=lambda x: -x["total_minutes"])[:12],
+            "last_updated": datetime.now(timezone.utc).isoformat() + "Z",
+        }
+
+        doc_ref = db.collection(USERS_COLLECTION).document(uid)
+        await doc_ref.set({"user_summary": summary}, merge=True)
+    except Exception as e:
+        print(f"[summary] Failed to update user_summary for {uid}: {e}")
+
+
 # ── Models ────────────────────────────────────────────────────────────────────
 
 class ReflectionIn(BaseModel):
@@ -137,6 +221,8 @@ class ReflectionIn(BaseModel):
     reflectionText: str
     id: str
     savedAt: str
+    userId: Optional[str] = None   # Firebase UID — links reflection to its owner
+    category: Optional[str] = None
     # Optional MCQ fields — used as delayed RL reward signals
     sessionLengthFeedback: Optional[str] = None  # 'too_short' | 'just_right' | 'too_long'
     timingFeedback: Optional[str] = None          # 'too_early' | 'good_timing' | 'too_late'
@@ -157,14 +243,20 @@ class UserOut(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/reflections", response_model=List[ReflectionOut])
-async def list_reflections(session_id: Optional[str] = None):
+async def list_reflections(session_id: Optional[str] = None, user_id: Optional[str] = None):
     db = get_db()
     col = db.collection(COLLECTION)
     if session_id:
         query = col.where("sessionId", "==", session_id)
+        docs = [doc.to_dict() async for doc in query.stream()]
+    elif user_id:
+        # Fetch records owned by this user plus any unassigned (userId == null) records
+        owned = [doc.to_dict() async for doc in col.where("userId", "==", user_id).stream()]
+        unassigned = [doc.to_dict() async for doc in col.where("userId", "==", None).stream()]
+        seen_ids = {d["id"] for d in owned}
+        docs = owned + [d for d in unassigned if d["id"] not in seen_ids]
     else:
-        query = col
-    docs = [doc.to_dict() async for doc in query.stream()]
+        docs = [doc.to_dict() async for doc in col.stream()]
     return docs
 
 
@@ -238,6 +330,9 @@ async def create_reflection(body: ReflectionIn):
             print(f"[RL] Failed to apply delayed productivity reward: {_rl_err}")
     # ─────────────────────────────────────────────────────────────────────────
 
+    if body.userId:
+        await _update_user_summary(body.userId)
+
     return record
 
 
@@ -250,6 +345,23 @@ async def delete_reflection(reflection_id: str):
         raise HTTPException(404, "Reflection not found")
     await doc_ref.delete()
     return {"ok": True}
+
+
+@app.get("/analytics/{user_id}")
+async def get_analytics(user_id: str):
+    """Return the precomputed user_summary for a user (keyed by Firebase UID)."""
+    db = get_db()
+    doc = await db.collection(USERS_COLLECTION).document(user_id).get()
+    if not doc.exists:
+        raise HTTPException(404, "User not found")
+    data = doc.to_dict() or {}
+    summary = data.get("user_summary")
+    if not summary:
+        # Compute on-demand if never cached yet
+        await _update_user_summary(user_id)
+        doc = await db.collection(USERS_COLLECTION).document(user_id).get()
+        summary = (doc.to_dict() or {}).get("user_summary")
+    return summary or {}
 
 
 @app.get("/users", response_model=List[UserOut])
@@ -268,6 +380,7 @@ async def list_users():
 
 
 class UserRegisterIn(BaseModel):
+    uid: str = ""
     email: str
     display_name: str = ""
 
@@ -277,25 +390,29 @@ _current_user_email: str = ""  # tracks the logged-in user's email for bandit pe
 
 @app.post("/users/register", status_code=201)
 async def register_user(body: UserRegisterIn):
-    """Create a student document on first signup (idempotent — no-op if already exists)."""
+    """Create a student document on first signup (idempotent — no-op if already exists).
+    Document ID is the Firebase UID when provided, otherwise falls back to email."""
     global _current_user_email
-    email = body.email.strip().lower()
-    if not email:
-        raise HTTPException(400, "email is required")
+    email = body.email.strip().lower() if body.email else ""
+    uid = body.uid.strip() if body.uid else ""
+    doc_id = uid or email
+    if not doc_id:
+        raise HTTPException(400, "uid or email is required")
 
     _current_user_email = email
 
     db = get_db()
-    doc_ref = db.collection(USERS_COLLECTION).document(email)
+    doc_ref = db.collection(USERS_COLLECTION).document(doc_id)
     existing = await doc_ref.get()
     if existing.exists:
-        # Load persisted bandit state for this returning user
         await _load_bandit_state(email)
         return {"created": False, "data": existing.to_dict()}
 
     now = datetime.now(timezone.utc).isoformat() + "Z"
     user = {
+        "uid": uid,
         "email": email,
+        "display_name": body.display_name,
         "user_summary": None,
         "created_at": now,
     }
@@ -303,21 +420,204 @@ async def register_user(body: UserRegisterIn):
     return {"created": True, "data": user}
 
 
-@app.post("/users/seed", response_model=List[UserOut])
-async def seed_dummy_users():
-    db = get_db()
-    now = datetime.now(timezone.utc).isoformat() + "Z"
-    rows = [
-        ("dummy_alice", "Alice", "alice@example.test"),
-        ("dummy_bob", "Bob", "bob@example.test"),
-        ("dummy_carol", "Carol", "carol@example.test"),
-    ]
-    out: List[UserOut] = []
-    for doc_id, name, email in rows:
-        record = {"displayName": name, "email": email, "createdAt": now, "seed": True}
-        await db.collection(USERS_COLLECTION).document(doc_id).set(record)
-        out.append(UserOut(id=doc_id, displayName=name, email=email, createdAt=now))
-    return out
+
+
+# ── Insights endpoint ─────────────────────────────────────────────────────────
+
+class InsightsRequest(BaseModel):
+    reflections: List[dict] = []
+    sessions: List[dict] = []
+    user_type: Optional[str] = None   # e.g. "student", "teacher", "professional"
+    user_email: Optional[str] = None  # email — matches the existing email-keyed user doc
+
+
+def _build_insights_prompt(reflections: List[dict], sessions: List[dict], user_type: Optional[str]) -> str:
+    from datetime import date as _date_cls
+    from collections import defaultdict
+
+    # ── Subject aggregates ────────────────────────────────────────────────────
+    subj_mins: dict = defaultdict(int)
+    subj_prods: dict = defaultdict(list)
+    for r in reflections:
+        title = r.get("title") or "Unknown"
+        try:
+            sh, sm = map(int, r.get("startTime", "0:0").split(":"))
+            eh, em = map(int, r.get("endTime", "0:0").split(":"))
+            dur = max(0, eh * 60 + em - sh * 60 - sm)
+        except Exception:
+            dur = 0
+        subj_mins[title] += dur
+        subj_prods[title].append(float(r.get("productivity", 3)))
+
+    top_subjects = sorted(subj_mins.items(), key=lambda x: -x[1])[:6]
+    subj_lines = "\n".join(
+        f"  - {t}: {m // 60}h {m % 60}m total, avg productivity {sum(subj_prods[t]) / len(subj_prods[t]):.1f}/5"
+        for t, m in top_subjects
+    ) or "  (none)"
+
+    # ── Hour aggregates ───────────────────────────────────────────────────────
+    hour_prods: dict = defaultdict(list)
+    for r in reflections:
+        try:
+            h = int(r.get("startTime", "0:0").split(":")[0])
+            hour_prods[h].append(float(r.get("productivity", 3)))
+        except Exception:
+            pass
+    hour_avgs = sorted(
+        [(h, sum(v) / len(v), len(v)) for h, v in hour_prods.items()],
+        key=lambda x: -x[1],
+    )
+    def fmt_hour(h: int) -> str:
+        return f"{'12' if h == 0 else str(h) if h <= 12 else str(h - 12)} {'AM' if h < 12 else 'PM'}"
+
+    hour_lines = "\n".join(
+        f"  - {fmt_hour(h)}: avg {avg:.1f}/5 ({cnt} sessions)"
+        for h, avg, cnt in hour_avgs[:5]
+    ) or "  (none)"
+
+    # ── Day-of-week aggregates ────────────────────────────────────────────────
+    DOW = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    dow_prods: dict = defaultdict(list)
+    for r in reflections:
+        try:
+            dow = _date_cls.fromisoformat(r["date"]).weekday()
+            dow_prods[dow].append(float(r.get("productivity", 3)))
+        except Exception:
+            pass
+    dow_lines = "\n".join(
+        f"  - {DOW[d]}: avg {sum(v) / len(v):.1f}/5 ({len(v)} sessions)"
+        for d, v in sorted(dow_prods.items(), key=lambda x: -sum(x[1]) / len(x[1]))
+    ) or "  (none)"
+
+    # ── MCQ feedback ─────────────────────────────────────────────────────────
+    len_c: dict = defaultdict(int)
+    tim_c: dict = defaultdict(int)
+    brk_c: dict = defaultdict(int)
+    for r in reflections:
+        if r.get("sessionLengthFeedback"): len_c[r["sessionLengthFeedback"]] += 1
+        if r.get("timingFeedback"):        tim_c[r["timingFeedback"]] += 1
+        if r.get("breaksFeedback"):        brk_c[r["breaksFeedback"]] += 1
+
+    len_total = sum(len_c.values())
+    tim_total = sum(tim_c.values())
+    brk_total = sum(brk_c.values())
+
+    def pct(n: int, total: int) -> str:
+        return f"{round(n / total * 100)}%" if total > 0 else "—"
+
+    mcq_block = ""
+    if len_total:
+        mcq_block += f"  Session length: {pct(len_c['too_short'], len_total)} too short, {pct(len_c['just_right'], len_total)} just right, {pct(len_c['too_long'], len_total)} too long\n"
+    if tim_total:
+        mcq_block += f"  Timing: {pct(tim_c['too_early'], tim_total)} too early, {pct(tim_c['good_timing'], tim_total)} good timing, {pct(tim_c['too_late'], tim_total)} too late\n"
+    if brk_total:
+        mcq_block += f"  Breaks: {pct(brk_c['too_many'], brk_total)} too many, {pct(brk_c['just_right'], brk_total)} just right, {pct(brk_c['too_few'], brk_total)} too few\n"
+    if not mcq_block:
+        mcq_block = "  (no MCQ feedback yet)\n"
+
+    # ── Calendar load ─────────────────────────────────────────────────────────
+    cal_mins_total = sum(s.get("durationMins", 0) for s in sessions)
+    cal_line = f"{cal_mins_total // 60}h {cal_mins_total % 60}m across {len(sessions)} events" if sessions else "(no calendar data)"
+
+    # ── Recent notes ──────────────────────────────────────────────────────────
+    recent = sorted(reflections, key=lambda r: r.get("date", ""))[-6:]
+    notes_lines = "\n".join(
+        f"  [{r.get('date')} {r.get('startTime','')}-{r.get('endTime','')}] {r.get('title')} (prod={r.get('productivity')}/5): {(r.get('reflectionText') or '')[:120]}"
+        for r in recent if r.get("reflectionText")
+    ) or "  (none)"
+
+    user_desc = f"a {user_type}" if user_type else "a student/professional"
+
+    return f"""You are CalCoach, a sharp and encouraging productivity coach. The user is {user_desc} who has logged {len(reflections)} work sessions.
+
+TOP SUBJECTS BY TIME:
+{subj_lines}
+
+PRODUCTIVITY BY HOUR (sorted best → worst):
+{hour_lines}
+
+PRODUCTIVITY BY DAY OF WEEK (sorted best → worst):
+{dow_lines}
+
+SESSION QUALITY FEEDBACK:
+{mcq_block}
+TOTAL CALENDAR TIME: {cal_line}
+
+RECENT SESSION NOTES FROM THE USER:
+{notes_lines}
+
+Return a JSON object with exactly these two keys:
+
+"feedback": A string of 4–6 coaching bullet points (each starting with •). Rules:
+- Reference actual subjects, hours, and days from the data
+- Each point is 1–2 sentences: lead with a genuine strength or positive observation, then frame any improvement as an exciting opportunity ("you could unlock even more by…", "imagine how much you'd get done if…", "one small shift that could make a big difference…")
+- Warm, energetic, specific — like a coach who is genuinely impressed and wants to help them go further
+- Your main goal is to mention something that they might not already know about themselves, or something that they might not have thought of before.
+- Genuine useful advice.
+- Focus on 3 main points that really would help them the most.
+- Be scientifically grounded and use data to support your advice.
+- Under 220 words; no title
+
+"user_summary": A 3–4 sentence internal profile written in third person. Cover in order: (1) who they appear to be and what they work on, (2) their main subjects/commitments by time spent, (3) their peak productive hours and best days, (4) any notable patterns such as underestimating session length, timing issues, or break needs. Be concise and factual — this is used by the scheduling system to personalise future suggestions."""
+
+
+@app.post("/insights")
+async def get_insights(body: InsightsRequest):
+    import traceback as _tb
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise HTTPException(500, "GROQ_API_KEY not set")
+    if not body.reflections and not body.sessions:
+        raise HTTPException(400, "No data provided")
+
+    try:
+        prompt = _build_insights_prompt(body.reflections, body.sessions, body.user_type)
+    except Exception as e:
+        print(f"[insights] prompt build failed: {e}")
+        _tb.print_exc()
+        raise HTTPException(500, f"Prompt build error: {e}")
+
+    try:
+        client = AsyncGroq(api_key=api_key)
+        completion = await client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You are CalCoach, a productivity coach. Always respond with valid JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.7,
+            max_tokens=600,
+        )
+    except Exception as e:
+        print(f"[insights] Groq API call failed: {e}")
+        _tb.print_exc()
+        raise HTTPException(500, f"LLM error: {e}")
+
+    raw = completion.choices[0].message.content or "{}"
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = {}
+
+    feedback = (parsed.get("feedback") or "").strip()
+    user_summary_text = (parsed.get("user_summary") or "").strip()
+
+    # Persist ai_summary into the existing email-keyed user document
+    email_key = (body.user_email or "").strip().lower()
+    if user_summary_text and email_key:
+        try:
+            db = get_db()
+            doc_ref = db.collection(USERS_COLLECTION).document(email_key)
+            await doc_ref.set(
+                {"user_summary": {"ai_summary": user_summary_text, "ai_summary_updated_at": datetime.now(timezone.utc).isoformat() + "Z"}},
+                merge=True,
+            )
+            print(f"[insights] Stored ai_summary for {email_key}")
+        except Exception as e:
+            print(f"[insights] Failed to store ai_summary: {e}")
+
+    return {"feedback": feedback, "user_summary": user_summary_text}
 
 
 # ── Chat models ───────────────────────────────────────────────────────────────

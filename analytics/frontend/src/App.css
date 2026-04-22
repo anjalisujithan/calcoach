@@ -866,12 +866,45 @@ body {
 }
 
 .analytics-inner {
-  max-width: 1000px;
+  max-width: 1400px;
   margin: 0 auto;
   padding: 28px 28px 48px;
   display: flex;
   flex-direction: column;
   gap: 0;
+}
+
+/* Charts + smart feedback side-by-side */
+.analytics-main-grid {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr;
+  gap: 16px;
+  align-items: start;
+  margin-top: 0;
+}
+
+@media (max-width: 900px) {
+  .analytics-main-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Smart feedback panel */
+.smart-feedback-panel {
+  position: sticky;
+  top: 16px;
+  border-radius: 12px;
+  box-shadow: 0 2px 12px rgba(26, 115, 232, 0.10);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }
 
 /* Summary stat cards */
