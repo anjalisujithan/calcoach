@@ -50,6 +50,15 @@ def _init_app() -> firebase_admin.App:
     )
 
 
+async def get_calendar_tokens(email: str) -> dict | None:
+    """Return stored Google Calendar OAuth tokens for a user, or None if not found."""
+    db = get_db()
+    doc = await db.collection("users").document(email).get()
+    if doc.exists:
+        return (doc.to_dict() or {}).get("calendar_tokens")
+    return None
+
+
 def get_db() -> firestore.AsyncClient:
     """Return the Firestore async client, initializing Firebase on first call."""
     global _app

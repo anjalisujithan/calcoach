@@ -132,6 +132,42 @@ class LinUCBBandit:
         results.sort(key=lambda t: t[1], reverse=True)
         return results
 
+    def rank_joint(
+        self,
+        candidates: List[CandidateSchedule],
+        profile_a: UserProfile,
+        profile_b: UserProfile,
+        task: TaskRequest,
+        calendar_json_a: Dict[str, List[str]],
+        calendar_json_b: Dict[str, List[str]],
+    ) -> List[CandidateSchedule]:
+        """
+        Rank candidates for two users jointly.
+        Each candidate is scored independently for both users; the combined score
+        is min(score_a, score_b) so we never favour a slot one person would hate.
+        """
+        if not candidates:
+            return []
+
+        A_a, b_a = self._load_state(profile_a.bandit_state)
+        A_inv_a = np.linalg.inv(A_a)
+        theta_a = A_inv_a @ b_a
+
+        A_b, b_b = self._load_state(profile_b.bandit_state)
+        A_inv_b = np.linalg.inv(A_b)
+        theta_b = A_inv_b @ b_b
+
+        scored: List[Tuple[float, CandidateSchedule]] = []
+        for candidate in candidates:
+            x_a = extract(candidate, profile_a, task, calendar_json_a)
+            x_b = extract(candidate, profile_b, task, calendar_json_b)
+            score_a = self._score(x_a, theta_a, A_inv_a)
+            score_b = self._score(x_b, theta_b, A_inv_b)
+            scored.append((min(score_a, score_b), candidate))
+
+        scored.sort(key=lambda t: t[0], reverse=True)
+        return [c for _, c in scored]
+
     # ------------------------------------------------------------------
     # Public: update
     # ------------------------------------------------------------------
