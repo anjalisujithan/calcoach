@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useAuth } from '../AuthContext';
 
 const ANALYTICS_API = 'http://localhost:8001';
 
@@ -38,6 +39,7 @@ interface Props {
 }
 
 export default function OnboardingSurvey({ onComplete }: Props) {
+  const { user } = useAuth();
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<SurveyAnswers>(DEFAULT_ANSWERS);
   const [submitting, setSubmitting] = useState(false);
@@ -67,7 +69,7 @@ export default function OnboardingSurvey({ onComplete }: Props) {
       await fetch(`${ANALYTICS_API}/onboarding`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(answers),
+        body: JSON.stringify({ ...answers, email: user?.email ?? '' }),
       });
     } catch { /* non-critical */ }
     localStorage.setItem('calcoach_survey_done', 'true');

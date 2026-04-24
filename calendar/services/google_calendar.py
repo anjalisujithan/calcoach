@@ -2,7 +2,27 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.discovery_cache.base import Cache
 from googleapiclient.errors import HttpError
+
+
+class _MemoryCache(Cache):
+    """In-process cache for the Google API discovery document.
+
+    Without this, googleapiclient re-fetches the discovery document on every
+    build() call, adding several hundred milliseconds of network latency to
+    every add/delete/edit request.
+    """
+    _store: dict = {}
+
+    def get(self, url: str):
+        return self._store.get(url)
+
+    def set(self, url: str, content) -> None:
+        self._store[url] = content
+
+
+_discovery_cache = _MemoryCache()
 
 
 def get_calendar_service(tokens: dict):
@@ -24,7 +44,20 @@ _DEFAULT_SYNC_DAYS_AHEAD = 1095
 
 class GoogleCalendarService:
     def __init__(self, creds: Credentials):
-        self.service = build("calendar", "v3", credentials=creds)
+        self.service = build("calendar", "v3", credentials=creds, cache=_discovery_cache)
+
+    def get_calendar_list(self) -> list:
+        result = self.service.calendarList().list().execute()
+        return [
+            {
+                "id": cal["id"],
+                "summary": cal.get("summary", cal["id"]),
+                "backgroundColor": cal.get("backgroundColor"),
+                "accessRole": cal.get("accessRole", "reader"),
+                "primary": cal.get("primary", False),
+            }
+            for cal in result.get("items", [])
+        ]
 
     def list_upcoming_events(
         self,
@@ -64,9 +97,9 @@ class GoogleCalendarService:
         )
         return result.get("items", [])
 
-    def get_event(self, event_id: str) -> Optional[dict]:
+    def get_event(self, event_id: str, calendar_id: str = "primary") -> Optional[dict]:
         try:
-            return self.service.events().get(calendarId="primary", eventId=event_id).execute()
+            return self.service.events().get(calendarId=calendar_id, eventId=event_id).execute()
         except HttpError as e:
             if getattr(e.resp, "status", None) in (404, 410):
                 return None
@@ -83,37 +116,42 @@ class GoogleCalendarService:
         result = self.service.freebusy().query(body=body).execute()
         return result.get("calendars", {}).get("primary", {}).get("busy", [])
 
-    def delete_event(self, event_id: str) -> None:
+    def delete_event(self, event_id: str, calendar_id: str = "primary") -> None:
         try:
-            self.service.events().delete(calendarId="primary", eventId=event_id).execute()
+            self.service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
         except HttpError as e:
             # Already removed (double-delete, sync lag, or other client) — treat as success
             if getattr(e.resp, "status", None) in (404, 410):
                 return
             raise
 
-    def update_event(self, event_id: str, summary: str, start: str, end: str, description: str = "", recurrence: list = []) -> dict:
+    def update_event(self, event_id: str, summary: str, start: str, end: str, description: str = "", location: str = "", location_type: str = "room", timezone: str = "America/Los_Angeles", visibility: str = "default", calendar_id: str = "primary", recurrence: list = [], color: str = "#4285f4") -> dict:
         body = {
             "summary": summary,
             "description": description,
-            "start": {"dateTime": start, "timeZone": "America/Los_Angeles"},
-            "end": {"dateTime": end, "timeZone": "America/Los_Angeles"},
+            "location": location,
+            "visibility": visibility,
+            "start": {"dateTime": start, "timeZone": timezone},
+            "end": {"dateTime": end, "timeZone": timezone},
+            "extendedProperties": {
+                "private": {"locationType": location_type, "calcoachColor": color}
+            },
         }
-        if recurrence:
-            body["recurrence"] = recurrence
-        return self.service.events().patch(calendarId="primary", eventId=event_id, body=body).execute()
+        body["recurrence"] = recurrence  # always set — empty list clears recurrence on GCal
+        return self.service.events().patch(calendarId=calendar_id, eventId=event_id, body=body).execute()
 
-    def add_event(self, summary: str, start: str, end: str, description: str = "", recurrence: list = []) -> dict:
+    def add_event(self, summary: str, start: str, end: str, description: str = "", location: str = "", location_type: str = "room", timezone: str = "America/Los_Angeles", visibility: str = "default", calendar_id: str = "primary", recurrence: list = [], color: str = "#4285f4") -> dict:
         event = {
             "summary": summary,
             "description": description,
-            "start": {"dateTime": start, "timeZone": "America/Los_Angeles"},
-            "end": {"dateTime": end, "timeZone": "America/Los_Angeles"},
-            "colorId": "9",
+            "location": location,
+            "visibility": visibility,
+            "start": {"dateTime": start, "timeZone": timezone},
+            "end": {"dateTime": end, "timeZone": timezone},
             "extendedProperties": {
-                "private": {"calcoach": "true"}
-            }
+                "private": {"calcoach": "true", "locationType": location_type, "calcoachColor": color}
+            },
         }
         if recurrence:
             event["recurrence"] = recurrence
-        return self.service.events().insert(calendarId="primary", body=event).execute()
+        return self.service.events().insert(calendarId=calendar_id, body=event).execute()

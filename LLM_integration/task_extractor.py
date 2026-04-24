@@ -49,7 +49,7 @@ class TaskExtractor:
     using Claude.
     """
 
-    def __init__(self, model: str = "claude-opus-4-6") -> None:
+    def __init__(self, model: str = "claude-haiku-4-5-20251001") -> None:
         self._client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
         self._model = model
 
