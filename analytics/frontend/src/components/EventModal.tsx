@@ -384,7 +384,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
     setEndTime(addMinsStr(t, dur));
   }
 
-  function handleSaveEdit() {
+  function doSaveEdit() {
     const [h, m] = startTime.split(':').map(Number);
     onSave(session.id, {
       title: title.trim() || session.title,
@@ -403,17 +403,16 @@ export default function EventModal({ session, reflections, categories = [], onAd
       recurrence: buildRrule(recurrenceKey, date),
       category: category || undefined,
     });
-    onClose();
   }
 
-  function handleSaveReflection() {
+  function doSaveReflection() {
     if (!productivity) return;
     onSaveReflection({
       sessionId: session.id,
-      title: session.title,
-      description: session.description,
+      title: title.trim() || session.title,
+      description,
       location: location || undefined,
-      date: session.date,
+      date,
       startTime,
       endTime,
       productivity,
@@ -422,6 +421,18 @@ export default function EventModal({ session, reflections, categories = [], onAd
       timingFeedback: timing ?? undefined,
       breaksFeedback: breaks ?? undefined,
     });
+  }
+
+  function handleSaveEdit() {
+    doSaveEdit();
+    doSaveReflection();
+    onClose();
+  }
+
+  function handleSaveReflection() {
+    if (!productivity) return;
+    doSaveEdit();
+    doSaveReflection();
     setReflSaved(true);
     setReflText('');
     setProductivity(null);
