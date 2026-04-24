@@ -2,7 +2,27 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.discovery_cache.base import Cache
 from googleapiclient.errors import HttpError
+
+
+class _MemoryCache(Cache):
+    """In-process cache for the Google API discovery document.
+
+    Without this, googleapiclient re-fetches the discovery document on every
+    build() call, adding several hundred milliseconds of network latency to
+    every add/delete/edit request.
+    """
+    _store: dict = {}
+
+    def get(self, url: str):
+        return self._store.get(url)
+
+    def set(self, url: str, content) -> None:
+        self._store[url] = content
+
+
+_discovery_cache = _MemoryCache()
 
 
 def get_calendar_service(tokens: dict):
@@ -24,7 +44,7 @@ _DEFAULT_SYNC_DAYS_AHEAD = 1095
 
 class GoogleCalendarService:
     def __init__(self, creds: Credentials):
-        self.service = build("calendar", "v3", credentials=creds)
+        self.service = build("calendar", "v3", credentials=creds, cache=_discovery_cache)
 
     def list_upcoming_events(
         self,

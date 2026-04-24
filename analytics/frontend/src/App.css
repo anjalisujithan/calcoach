@@ -379,11 +379,13 @@ body {
   font-size: 14px;
   color: #202124;
   outline: none;
+  width: 100%;
 }
 
 .modal-field input:focus,
 .modal-field select:focus {
   border-color: #1a73e8;
+  box-shadow: 0 0 0 2px rgba(26,115,232,0.12);
 }
 
 .modal-textarea {
@@ -503,6 +505,8 @@ body {
   border-radius: 18px;
   font-size: 14px;
   line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .chat-bubble.user {
@@ -525,6 +529,42 @@ body {
   color: #9aa0a6;
   font-size: 12px;
   text-align: center;
+}
+
+.loading-bubble {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 100px;
+}
+
+.loading-phrase {
+  font-style: italic;
+  color: #5f6368;
+  transition: opacity 0.3s ease;
+}
+
+.loading-dots {
+  font-size: 18px;
+  line-height: 1;
+  color: #1a73e8;
+  letter-spacing: 1px;
+}
+
+.loading-dots-ghost {
+  color: #d0d7de;
+}
+
+.chat-bubble .mention-linked-email,
+.mention-linked-email {
+  color: #1a73e8 !important;
+  font-weight: 700 !important;
+  text-decoration: none;
+}
+
+.chat-bubble .mention-linked-email:hover,
+.mention-linked-email:hover {
+  text-decoration: underline;
 }
 
 .chat-input-area {
@@ -580,8 +620,17 @@ body {
   padding: 8px 8px 8px 14px;
 }
 
-.chat-input-row textarea {
+.chat-textarea-wrapper {
   flex: 1;
+  position: relative;
+  max-height: 160px;
+  overflow: hidden;
+}
+
+
+.chat-input-row textarea {
+  display: block;
+  width: 100%;
   border: none;
   outline: none;
   resize: none;
@@ -592,10 +641,41 @@ body {
   overflow-y: auto;
   line-height: 1.4;
   font-family: inherit;
+  padding: 6px 0;
 }
 
 .chat-input-row textarea::placeholder {
   color: #9aa0a6;
+}
+
+.chat-contenteditable {
+  display: block;
+  width: 100%;
+  border: none;
+  outline: none;
+  font-size: 14px;
+  color: #202124;
+  background: transparent;
+  max-height: 160px;
+  overflow-y: auto;
+  line-height: 1.4;
+  font-family: inherit;
+  padding: 6px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-contenteditable:empty::before {
+  content: attr(data-placeholder);
+  color: #9aa0a6;
+  pointer-events: none;
+}
+
+.chat-contenteditable .mention-linked-email {
+  color: #1a73e8;
+  font-weight: 600;
+  cursor: default;
+  user-select: all;
 }
 
 .chat-send-btn {
@@ -616,6 +696,48 @@ body {
 
 .chat-send-btn:hover { background: #1557b0; }
 .chat-send-btn:disabled { background: #dadce0; cursor: default; }
+
+.chat-input-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.chat-stop-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  background: #3c3c3c;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+.chat-stop-btn::before {
+  content: '';
+  width: 9px;
+  height: 9px;
+  background: #fff;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.chat-stop-btn:hover {
+  background: #555;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+}
+
+.chat-stop-btn:active {
+  background: #2f2f2f;
+  transform: scale(0.96);
+}
 
 .reflection-tag {
   font-size: 10px;
