@@ -630,7 +630,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
             durationMins: newEventDraft.durationMins,
             color: '#4285f4',
           }}
-          reflections={[]}
+          reflections={reflections}
           categories={categories}
           onAddCategory={handleAddCategory}
           onDeleteCategory={handleDeleteCategory}

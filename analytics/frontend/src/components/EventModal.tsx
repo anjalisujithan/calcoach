@@ -384,7 +384,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
     setEndTime(addMinsStr(t, dur));
   }
 
-  function handleSaveEdit() {
+  function doSaveEdit() {
     const [h, m] = startTime.split(':').map(Number);
     onSave(session.id, {
       title: title.trim() || session.title,
@@ -403,17 +403,16 @@ export default function EventModal({ session, reflections, categories = [], onAd
       recurrence: buildRrule(recurrenceKey, date),
       category: category || undefined,
     });
-    onClose();
   }
 
-  function handleSaveReflection() {
+  function doSaveReflection() {
     if (!productivity) return;
     onSaveReflection({
       sessionId: session.id,
-      title: session.title,
-      description: session.description,
+      title: title.trim() || session.title,
+      description,
       location: location || undefined,
-      date: session.date,
+      date,
       startTime,
       endTime,
       productivity,
@@ -422,6 +421,18 @@ export default function EventModal({ session, reflections, categories = [], onAd
       timingFeedback: timing ?? undefined,
       breaksFeedback: breaks ?? undefined,
     });
+  }
+
+  function handleSaveEdit() {
+    doSaveEdit();
+    doSaveReflection();
+    onClose();
+  }
+
+  function handleSaveReflection() {
+    if (!productivity) return;
+    doSaveEdit();
+    doSaveReflection();
     setReflSaved(true);
     setReflText('');
     setProductivity(null);
@@ -461,7 +472,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
           background: '#fff',
           borderRadius: '12px',
           boxShadow: '0 8px 40px rgba(0,0,0,0.18)',
-          width: isNew ? '460px' : '900px',
+          width: '900px',
           maxWidth: '96vw',
           maxHeight: '92vh',
           overflow: 'hidden',
@@ -544,14 +555,14 @@ export default function EventModal({ session, reflections, categories = [], onAd
         </div>
 
         {/* Two columns */}
-        <div style={{ display: 'flex', flex: isNew ? '0 0 auto' : 1, overflow: isNew ? 'visible' : 'hidden', minHeight: 0 }}>
+        <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0 }}>
 
           {/* ── Left: Edit ── */}
           <div style={{
-            flex: isNew ? 1 : '0 0 500px',
+            flex: '0 0 500px',
             padding: '20px 24px',
-            overflowY: isNew ? 'visible' : 'auto',
-            borderRight: isNew ? 'none' : '1px solid #e8eaed',
+            overflowY: 'auto',
+            borderRight: '1px solid #e8eaed',
             display: 'flex',
             flexDirection: 'column',
             gap: '14px',
@@ -790,8 +801,8 @@ export default function EventModal({ session, reflections, categories = [], onAd
             </div>
           </div>
 
-          {/* ── Right: Reflect (hidden for new events) ── */}
-          {!isNew && <div style={{
+          {/* ── Right: Reflect ── */}
+          <div style={{
             flex: 1,
             padding: '20px 24px',
             overflowY: 'auto',
@@ -899,7 +910,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
                 ))}
               </div>
             )}
-          </div>}
+          </div>
         </div>
       </div>
     </div>
