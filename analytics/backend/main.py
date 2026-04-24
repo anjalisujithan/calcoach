@@ -578,7 +578,7 @@ class ChatResponse(BaseModel):
 HISTORY_THRESHOLD = 8
 KEEP_RECENT = 4
 TARGET_VIABLE_SUGGESTIONS = 3
-SCHEDULING_REPAIR_MAX_ROUNDS = 6
+SCHEDULING_REPAIR_MAX_ROUNDS = 2   # each round is a full LLM call; keep tight to avoid timeouts
 
 
 async def _compress_history(
@@ -711,6 +711,14 @@ Do not include any text outside the JSON object."""
 
 def _is_scheduling_request(message: str) -> bool:
     return bool(_SCHED_INTENT_RE.search(message or ""))
+
+
+def _extract_attendee_email(message: str) -> Optional[str]:
+    """Extract the first @email mention from the message, if any.
+    e.g. 'schedule with @alice@example.com' → 'alice@example.com'
+    """
+    m = _AT_EMAIL_RE.search(message or "")
+    return m.group(1).lower() if m else None
 
 
 def _sanitize_session_for_sharing(session: dict) -> Optional[dict]:
@@ -1361,7 +1369,7 @@ async def _repair_scheduling_until_viable(
             {"role": "user", "content": repair_content},
         ]
         comp = await client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",   # fast model for repair rounds; saves ~6s per round
             messages=messages2,
             response_format={"type": "json_object"},
         )
