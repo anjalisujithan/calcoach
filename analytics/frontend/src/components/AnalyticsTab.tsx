@@ -40,7 +40,7 @@ const FACE = ['', '😞', '😕', '😐', '🙂', '😄'];
 
 interface ProdPoint { key: string; label: string; avgProductivity: number; sessionCount: number; }
 interface SubjectPoint { title: string; totalMins: number; sessionCount: number; avgProductivity: number; hasReflection: boolean; }
-interface CalSession { title: string; durationMins: number; }
+interface CalSession { title: string; durationMins: number; date?: string; }
 
 function byHour(reflections: ReflectionEntry[]): ProdPoint[] {
   const g: Record<number, number[]> = {};
@@ -72,6 +72,22 @@ function byDow(reflections: ReflectionEntry[]): ProdPoint[] {
       avgProductivity: vals.reduce((a, b) => a + b, 0) / vals.length,
       sessionCount: vals.length,
     }));
+}
+
+function byLocation(reflections: ReflectionEntry[]): ProdPoint[] {
+  const g: Record<string, number[]> = {};
+  for (const r of reflections) {
+    if (!r.location) continue;
+    (g[r.location] ??= []).push(r.productivity);
+  }
+  return Object.entries(g)
+    .map(([loc, vals]) => ({
+      key: loc,
+      label: loc,
+      avgProductivity: vals.reduce((a, b) => a + b, 0) / vals.length,
+      sessionCount: vals.length,
+    }))
+    .sort((a, b) => b.avgProductivity - a.avgProductivity);
 }
 
 function bySubject(sessions: CalSession[], reflections: ReflectionEntry[]): SubjectPoint[] {
@@ -660,7 +676,7 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub?: s
 
 const API = 'http://localhost:8001';
 
-export default function AnalyticsTab({ reflections, sessions = [], userId, userEmail }: { reflections: ReflectionEntry[]; sessions?: CalSession[]; userId?: string; userEmail?: string }) {
+export default function AnalyticsTab({ reflections, sessions = [], userEmail }: { reflections: ReflectionEntry[]; sessions?: CalSession[]; userEmail?: string }) {
   // Use local reflections (in-session) merged with any loaded from Firestore
   const [allReflections, setAllReflections] = useState<ReflectionEntry[]>(reflections);
 
@@ -671,6 +687,7 @@ export default function AnalyticsTab({ reflections, sessions = [], userId, userE
   const hourData  = byHour(allReflections);
   const dowData   = byDow(allReflections);
   const subjData  = bySubject(sessions, allReflections);
+  const locData   = byLocation(allReflections);
   const mcqData   = mcqRows(allReflections);
   const underestData = underestimatedSubjects(allReflections);
   const timingProdData = productivityByTiming(allReflections);
@@ -679,15 +696,34 @@ export default function AnalyticsTab({ reflections, sessions = [], userId, userE
     r => r.sessionLengthFeedback || r.timingFeedback || r.breaksFeedback
   );
 
-  const totalMins = sessions.length > 0
-    ? sessions.reduce((s, r) => s + r.durationMins, 0)
-    : allReflections.reduce((s, r) => s + sessionDuration(r), 0);
+  const now = new Date();
+  const weekStart = new Date(now);
+  weekStart.setDate(now.getDate() - now.getDay());
+  weekStart.setHours(0, 0, 0, 0);
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 6);
+  weekEnd.setHours(23, 59, 59, 999);
+
+  const thisWeekSessions = sessions.filter(s => {
+    if (!s.date) return false;
+    const d = parseISO(s.date);
+    return d >= weekStart && d <= weekEnd;
+  });
+  const thisWeekReflections = allReflections.filter(r => {
+    const d = parseISO(r.date);
+    return d >= weekStart && d <= weekEnd;
+  });
+
+  const totalMins = thisWeekSessions.length > 0
+    ? thisWeekSessions.reduce((s, r) => s + r.durationMins, 0)
+    : thisWeekReflections.reduce((s, r) => s + sessionDuration(r), 0);
 
   const peakHour = hourData.reduce<ProdPoint | null>(
     (b, d) => !b || d.avgProductivity > b.avgProductivity ? d : b, null);
   const peakDow = dowData.reduce<ProdPoint | null>(
     (b, d) => !b || d.avgProductivity > b.avgProductivity ? d : b, null);
   const topSubject = subjData[0] ?? null;
+  const peakLocation = locData[0] ?? null;
 
   const timingFitRate   = justRightRate(allReflections, 'timingFeedback', 'good_timing');
   const underestRate    = justRightRate(allReflections, 'sessionLengthFeedback', 'too_short');
@@ -702,7 +738,7 @@ export default function AnalyticsTab({ reflections, sessions = [], userId, userE
 
         {/* ── Summary cards ── */}
         <div className="analytics-stats-row">
-          <StatCard label="Total events time on calendar" value={totalMins > 0 ? fmtMins(totalMins) : '—'} />
+          <StatCard label="Total time logged this week" value={totalMins > 0 ? fmtMins(totalMins) : '—'} />
           <StatCard
             label="Most productive time"
             value={peakHour ? peakHour.label : '—'}
@@ -717,6 +753,11 @@ export default function AnalyticsTab({ reflections, sessions = [], userId, userE
             label="Most time spent on"
             value={topSubject ? topSubject.title : '—'}
             sub={topSubject ? `${fmtMins(topSubject.totalMins)} · ${topSubject.sessionCount} session${topSubject.sessionCount !== 1 ? 's' : ''}` : undefined}
+          />
+          <StatCard
+            label="Most productive location"
+            value={peakLocation ? peakLocation.label : '—'}
+            sub={peakLocation ? `avg ${peakLocation.avgProductivity.toFixed(1)} / 5 · ${peakLocation.sessionCount} session${peakLocation.sessionCount !== 1 ? 's' : ''}` : undefined}
           />
         </div>
 
@@ -827,6 +868,17 @@ export default function AnalyticsTab({ reflections, sessions = [], userId, userE
               </>
             )}
 
+            {/* ── Productivity by location ── */}
+            {locData.length > 0 && (
+              <div className="analytics-chart-panel" style={{ marginTop: 16 }}>
+                <div className="chart-panel-header">
+                  <h2 className="chart-title">Productivity by location</h2>
+                  <span className="chart-subtitle">avg score per session location</span>
+                </div>
+                <ProdBarChart data={locData} yLabel="Avg productivity" />
+              </div>
+            )}
+
             {/* ── All sessions table ── */}
             <div className="analytics-chart-panel" style={{ marginTop: 16 }}>
               <div className="chart-panel-header">
@@ -839,6 +891,7 @@ export default function AnalyticsTab({ reflections, sessions = [], userId, userE
                     <tr>
                       <th>Date</th>
                       <th>Title</th>
+                      <th>Location</th>
                       <th>Time</th>
                       <th>Duration</th>
                       <th>Productivity</th>
@@ -853,6 +906,7 @@ export default function AnalyticsTab({ reflections, sessions = [], userId, userE
                       <tr key={r.id}>
                         <td style={{ whiteSpace: 'nowrap' }}>{format(parseISO(r.date), 'MMM d, yyyy')}</td>
                         <td className="td-title">{r.title}</td>
+                        <td style={{ fontSize: 12, color: '#5f6368' }}>{r.location || '—'}</td>
                         <td style={{ whiteSpace: 'nowrap' }}>{r.startTime} – {r.endTime}</td>
                         <td style={{ whiteSpace: 'nowrap' }}>{fmtMins(sessionDuration(r))}</td>
                         <td style={{ textAlign: 'center' }}>
