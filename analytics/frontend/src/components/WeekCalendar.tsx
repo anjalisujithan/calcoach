@@ -12,7 +12,9 @@ export interface Session {
   durationMins: number;
   color: string;
   recurrence?: string[];  // RRULE strings e.g. ["RRULE:FREQ=WEEKLY;BYDAY=MO"]
+  recurringEventId?: string; // GCal series ID — present on instances of a recurring event
   category?: string;
+  attendees?: { email: string; displayName?: string; self?: boolean; responseStatus?: string }[];
   pending?: boolean;      // true = AI suggestion awaiting user accept/reject
   /** All blocks in one ranked option share this id; used with pendingSlotMap on the parent */
   pendingGroupId?: string;
@@ -29,6 +31,7 @@ interface Props {
   onDeleteSession?: (id: string) => void;
   onAcceptSession?: (id: string) => void;
   onRejectSession?: (id: string) => void;
+  onOpenCreate?: (date: string, startHour: number, startMin: number, durationMins: number) => void;
   categories?: string[];
   onAddCategory?: (cat: string) => void;
   onDeleteCategory?: (cat: string) => void;
@@ -45,11 +48,26 @@ const COLOR_PALETTE = [
 
 const RRULE_DAY = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 
-function buildRRule(repeat: string, customDays: number[], dayIdx: number): string[] {
-  if (repeat === 'daily') return ['RRULE:FREQ=DAILY'];
-  if (repeat === 'weekly') return [`RRULE:FREQ=WEEKLY;BYDAY=${RRULE_DAY[dayIdx]}`];
+function buildRRule(
+  repeat: string,
+  customDays: number[],
+  dayIdx: number,
+  repeatEnds: 'never' | 'on_date' | 'after',
+  repeatEndDate: string,
+  repeatEndCount: number,
+): string[] {
+  if (repeat === 'none') return [];
+  let endSuffix = '';
+  if (repeatEnds === 'on_date' && repeatEndDate) {
+    // Format date as YYYYMMDD for RRULE UNTIL
+    endSuffix = `;UNTIL=${repeatEndDate.replace(/-/g, '')}`;
+  } else if (repeatEnds === 'after' && repeatEndCount > 0) {
+    endSuffix = `;COUNT=${repeatEndCount}`;
+  }
+  if (repeat === 'daily') return [`RRULE:FREQ=DAILY${endSuffix}`];
+  if (repeat === 'weekly') return [`RRULE:FREQ=WEEKLY;BYDAY=${RRULE_DAY[dayIdx]}${endSuffix}`];
   if (repeat === 'custom' && customDays.length > 0)
-    return [`RRULE:FREQ=WEEKLY;BYDAY=${customDays.map(d => RRULE_DAY[d]).join(',')}`];
+    return [`RRULE:FREQ=WEEKLY;BYDAY=${customDays.map(d => RRULE_DAY[d]).join(',')}${endSuffix}`];
   return [];
 }
 
@@ -62,6 +80,9 @@ const DEFAULT_FORM = {
   color: '#4285f4',
   repeat: 'none',
   customDays: [] as number[],
+  repeatEnds: 'never' as 'never' | 'on_date' | 'after',
+  repeatEndDate: '',
+  repeatEndCount: 10,
   category: '',
   newCatInput: '',
   showNewCat: false,
@@ -152,7 +173,7 @@ interface DragGhost {
   title: string;
 }
 
-export default function WeekCalendar({ sessions = [], selectedSession, onSelectSession, onAddSession, onEditSession, onDeleteSession, onAcceptSession, onRejectSession, categories = [], onAddCategory, onDeleteCategory, toolbarExtra }: Props) {
+export default function WeekCalendar({ sessions = [], selectedSession, onSelectSession, onAddSession, onEditSession, onDeleteSession, onAcceptSession, onRejectSession, onOpenCreate, categories = [], onAddCategory, onDeleteCategory, toolbarExtra }: Props) {
   const [weekStart, setWeekStart] = useState(() =>
     startOfWeek(new Date(), { weekStartsOn: 0 })
   );
@@ -258,6 +279,11 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
     const { hour, min } = snapTo30(rawY);
     const startTime = `${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
     const endTime = addMins(startTime, 60);
+    if (onOpenCreate) {
+      const date = format(addDays(weekStart, colIdx), 'yyyy-MM-dd');
+      onOpenCreate(date, hour, min, 60);
+      return;
+    }
     setForm({ ...DEFAULT_FORM, day: String(colIdx), startTime, endTime });
     setShowModal(true);
   }
@@ -298,7 +324,7 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
     const [h, m] = form.startTime.split(':').map(Number);
     const dayIdx = Number(form.day);
     const date = format(addDays(weekStart, dayIdx), 'yyyy-MM-dd');
-    const recurrence = buildRRule(form.repeat, form.customDays, dayIdx);
+    const recurrence = buildRRule(form.repeat, form.customDays, dayIdx, form.repeatEnds, form.repeatEndDate, form.repeatEndCount);
     const sessionData = {
       title: form.title.trim(),
       description: form.description.trim(),
@@ -538,6 +564,53 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
                     >
                       {d[0]}
                     </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {form.repeat !== 'none' && (
+              <div className="modal-field">
+                <label>Ends</label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                  {(['never', 'on_date', 'after'] as const).map(opt => (
+                    <label key={opt} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.88rem' }}>
+                      <input
+                        type="radio"
+                        name="repeatEnds"
+                        value={opt}
+                        checked={form.repeatEnds === opt}
+                        onChange={() => setForm(f => ({ ...f, repeatEnds: opt }))}
+                        style={{ cursor: 'pointer' }}
+                      />
+                      {opt === 'never' && 'Never'}
+                      {opt === 'on_date' && (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          On date
+                          <input
+                            type="date"
+                            value={form.repeatEndDate}
+                            min={form.repeatEnds === 'on_date' ? undefined : undefined}
+                            onChange={e => setForm(f => ({ ...f, repeatEndDate: e.target.value, repeatEnds: 'on_date' }))}
+                            style={{ fontSize: '0.82rem', padding: '0.1rem 0.3rem' }}
+                          />
+                        </span>
+                      )}
+                      {opt === 'after' && (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          After
+                          <input
+                            type="number"
+                            min={1}
+                            max={999}
+                            value={form.repeatEndCount}
+                            onChange={e => setForm(f => ({ ...f, repeatEndCount: Math.max(1, parseInt(e.target.value) || 1), repeatEnds: 'after' }))}
+                            style={{ width: '52px', fontSize: '0.82rem', padding: '0.1rem 0.3rem' }}
+                          />
+                          occurrences
+                        </span>
+                      )}
+                    </label>
                   ))}
                 </div>
               </div>

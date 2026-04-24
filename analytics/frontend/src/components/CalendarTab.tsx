@@ -52,6 +52,8 @@ function googleEventToSession(event: any): Session | null {
     durationMins,
     color: GCAL_COLORS[event.colorId] ?? '#4285f4',
     recurrence: event.recurrence,
+    recurringEventId: event.recurringEventId,
+    attendees: event.attendees ?? [],
   };
 }
 
@@ -94,6 +96,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   const [refreshing, setRefreshing] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [categories, setCategories] = useState<string[]>(loadCategories);
+  const [newEventDraft, setNewEventDraft] = useState<{ date: string; startHour: number; startMin: number; durationMins: number } | null>(null);
 
   function handleAddCategory(cat: string) {
     setCategories(prev => {
@@ -198,6 +201,8 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
       const data = await res.json();
       const id = data.event?.id ?? mkId();
       setSessions(prev => [...prev, { ...s, id }]);
+      // Resync to load all expanded recurring instances from GCal
+      if ((s.recurrence ?? []).length > 0) fetchEvents();
     } catch {
       const id = mkId();
       localIds.current.add(id);
@@ -214,6 +219,26 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
     } catch { /* optimistic */ }
     setSessions(prev => prev.filter(s => s.id !== id));
     setSelectedSessionId(null);
+  }
+
+  async function handleDeleteSeriesSession(recurringEventId: string) {
+    try {
+      await fetch(`${CALENDAR_API}/calendar/events/${recurringEventId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+    } catch { /* optimistic */ }
+    setSessions(prev => prev.filter(s => s.recurringEventId !== recurringEventId && s.id !== recurringEventId));
+    setSelectedSessionId(null);
+  }
+
+  function handleOpenCreate(date: string, startHour: number, startMin: number, durationMins: number) {
+    setNewEventDraft({ date, startHour, startMin, durationMins });
+  }
+
+  async function handleSaveNew(_id: string, s: Omit<Session, 'id'>) {
+    await handleAddSession(s);
+    setNewEventDraft(null);
   }
 
   function clearPendingSuggestions() {
@@ -248,8 +273,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   async function handleSend(text: string) {
     if (chatLoading) return;
     const userMsg: Message = { id: mkId(), role: 'user', text };
-    const thinkingMsg: Message = { id: mkId(), role: 'assistant', text: '…' };
-    setMessages(m => [...m, userMsg, thinkingMsg]);
+    setMessages(m => [...m, userMsg]);
 
     const controller = new AbortController();
     inFlightController.current = controller;
@@ -279,7 +303,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
       clearInFlightRequest();
       const data = await res.json();
       const reply = data.reply ?? 'Sorry, something went wrong.';
-      setMessages(m => m.map(msg => msg.id === thinkingMsg.id ? { ...msg, text: reply } : msg));
+      setMessages(m => [...m, { id: mkId(), role: 'assistant', text: reply }]);
       if (data.updated_history) setChatHistory(data.updated_history);
 
       // Handle ranked suggestions as pending (grayed-out) calendar events
@@ -322,7 +346,10 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
       // Backwards-compat: direct events_to_create (non-scheduling replies)
       const newEvents = data.events_to_create ?? [];
       if (newEvents.length > 0) {
+        let hasRecurring = false;
         for (const event of newEvents) {
+          const recurrence: string[] = event.recurrence ?? [];
+          if (recurrence.length > 0) hasRecurring = true;
           await handleAddSession({
             title: event.title,
             description: event.description ?? '',
@@ -332,8 +359,11 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
             startMin: event.startMin,
             durationMins: event.durationMins,
             color: '#4285f4',
+            recurrence,
           });
         }
+        // Resync to load all expanded instances from GCal
+        if (hasRecurring) fetchEvents();
       }
     } catch (err: any) {
       const reason = abortReason.current;
@@ -343,7 +373,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           ? 'Stopped.'
           : 'Request timed out (>60s). The scheduling engine may be overloaded — try again.'
         : 'Error reaching CalCoach backend.';
-      setMessages(m => m.map(msg2 => msg2.id === thinkingMsg.id ? { ...msg2, text: msg } : msg2));
+      setMessages(m => [...m, { id: mkId(), role: 'assistant', text: msg }]);
     }
   }
 
@@ -377,7 +407,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
               startHour: e.startHour,
               startMin: e.startMin,
               durationMins: e.durationMins,
-              recurrence: [],
+              recurrence: e.recurrence ?? [],
             }),
           });
           const d = await res.json();
@@ -418,6 +448,11 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
 
     pendingSlotMap.current.clear();
     pendingSessionToGroup.current.clear();
+
+    // If any accepted event has recurrence, resync to load all expanded instances
+    if (info.events.some((e: any) => (e.recurrence ?? []).length > 0)) {
+      fetchEvents();
+    }
   }
 
   async function handleRejectSession(id: string) {
@@ -530,6 +565,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
         onDeleteSession={handleDeleteSession}
         onAcceptSession={handleAcceptSession}
         onRejectSession={handleRejectSession}
+        onOpenCreate={handleOpenCreate}
         categories={categories}
         onAddCategory={handleAddCategory}
         onDeleteCategory={handleDeleteCategory}
@@ -559,6 +595,30 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           onClose={() => setSelectedSessionId(null)}
           onSave={handleEditSession}
           onDelete={handleDeleteSession}
+          onDeleteSeries={handleDeleteSeriesSession}
+          onSaveReflection={onSaveReflection}
+        />
+      )}
+      {newEventDraft && (
+        <EventModal
+          session={{
+            id: '__new__',
+            title: '',
+            description: '',
+            date: newEventDraft.date,
+            dayIndex: new Date(newEventDraft.date + 'T12:00:00').getDay(),
+            startHour: newEventDraft.startHour,
+            startMin: newEventDraft.startMin,
+            durationMins: newEventDraft.durationMins,
+            color: '#4285f4',
+          }}
+          reflections={[]}
+          categories={categories}
+          onAddCategory={handleAddCategory}
+          onDeleteCategory={handleDeleteCategory}
+          onClose={() => setNewEventDraft(null)}
+          onSave={handleSaveNew}
+          onDelete={() => setNewEventDraft(null)}
           onSaveReflection={onSaveReflection}
         />
       )}

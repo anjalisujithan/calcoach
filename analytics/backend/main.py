@@ -57,6 +57,9 @@ from typing import List, Optional, Tuple
 import json
 import os
 import re
+import smtplib
+from email.message import EmailMessage
+from urllib.parse import urlencode
 
 try:
     from google.oauth2.credentials import Credentials as _GCreds
@@ -71,8 +74,9 @@ _SCHED_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from groq import AsyncGroq
 from pydantic import BaseModel, Field
 
@@ -95,6 +99,187 @@ app.add_middleware(
 COLLECTION = "reflections"
 USERS_COLLECTION = "users"
 SHARED_AVAILABILITY_COLLECTION = "shared_availability"
+SHARED_INVITES_COLLECTION = "shared_event_invites"
+
+
+def _parse_gcal_datetime(raw: Optional[str]) -> Optional[datetime]:
+    if not raw:
+        return None
+    txt = str(raw).strip()
+    if not txt:
+        return None
+    if txt.endswith("Z"):
+        txt = txt[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(txt)
+    except Exception:
+        return None
+
+
+def _gcal_event_to_session(event: dict) -> Optional[dict]:
+    """Convert a Google Calendar event payload to session shape used by scheduling."""
+    start = (event or {}).get("start", {}) or {}
+    end = (event or {}).get("end", {}) or {}
+
+    start_dt = _parse_gcal_datetime(start.get("dateTime"))
+    end_dt = _parse_gcal_datetime(end.get("dateTime"))
+
+    # Handle all-day events by treating them as full-day busy blocks.
+    if start_dt is None and start.get("date"):
+        try:
+            start_dt = datetime.fromisoformat(f"{start.get('date')}T00:00:00")
+            end_day = end.get("date") or start.get("date")
+            end_dt = datetime.fromisoformat(f"{end_day}T00:00:00")
+        except Exception:
+            return None
+
+    if start_dt is None:
+        return None
+
+    if end_dt is None:
+        end_dt = start_dt + timedelta(minutes=30)
+
+    duration = max(1, int((end_dt - start_dt).total_seconds() // 60))
+    return {
+        "title": str(event.get("summary") or "(Busy)"),
+        "date": start_dt.date().isoformat(),
+        "startHour": int(start_dt.hour),
+        "startMin": int(start_dt.minute),
+        "durationMins": duration,
+    }
+
+
+def _format_event_time_for_email(part: dict) -> str:
+    try:
+        dt = datetime.strptime(str(part["date"]), "%Y-%m-%d")
+        start_h = int(part.get("startHour", 0))
+        start_m = int(part.get("startMin", 0))
+        dur = int(part.get("durationMins", 60))
+        start_label = datetime.strptime(f"{start_h:02d}:{start_m:02d}", "%H:%M").strftime("%I:%M %p").lstrip("0")
+        end_dt = datetime(
+            year=dt.year,
+            month=dt.month,
+            day=dt.day,
+            hour=start_h,
+            minute=start_m,
+        ) + timedelta(minutes=dur)
+        end_label = end_dt.strftime("%I:%M %p").lstrip("0")
+        return f"{dt.strftime('%A, %b %d')} from {start_label} to {end_label}"
+    except Exception:
+        return _format_slot_label(part)
+
+
+def _build_shared_invite_links(invite_id: str) -> dict:
+    api_base = os.getenv("ANALYTICS_API_PUBLIC_BASE", "http://localhost:8001").rstrip("/")
+    frontend_base = os.getenv("CALCOACH_FRONTEND_URL", "http://localhost:3000").rstrip("/")
+
+    def _decision_link(decision: str) -> str:
+        query = urlencode(
+            {
+                "invite_id": invite_id,
+                "decision": decision,
+                "redirect": f"{frontend_base}?invite={invite_id}&decision={decision}",
+            }
+        )
+        return f"{api_base}/shared-invites/respond?{query}"
+
+    return {
+        "accept": _decision_link("accept"),
+        "reject": _decision_link("reject"),
+        "propose": _decision_link("propose"),
+    }
+
+
+def _send_shared_invite_email(
+    *,
+    requester_email: str,
+    attendee_email: str,
+    invite_id: str,
+    title: str,
+    event_time_text: str,
+) -> None:
+    smtp_host = (os.getenv("SMTP_HOST") or "").strip()
+    from_email = (os.getenv("INVITE_FROM_EMAIL") or "").strip()
+    if not smtp_host or not from_email:
+        print("[joint] SMTP_HOST or INVITE_FROM_EMAIL missing; skipping invite email send")
+        return
+
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = (os.getenv("SMTP_USERNAME") or "").strip()
+    smtp_password = os.getenv("SMTP_PASSWORD", "")
+    use_tls = os.getenv("SMTP_USE_TLS", "1").strip() not in ("0", "false", "False")
+
+    links = _build_shared_invite_links(invite_id)
+    subject = f"CalCoach invite: {title or 'Proposed shared event'}"
+    text = (
+        f"{requester_email} proposed a shared event.\n\n"
+        f"Event: {title or 'Shared event'}\n"
+        f"Proposed time: {event_time_text}\n\n"
+        "Respond in CalCoach:\n"
+        f"- Accept: {links['accept']}\n"
+        f"- Reject: {links['reject']}\n"
+        f"- Propose a new time: {links['propose']}\n"
+    )
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = from_email
+    msg["To"] = attendee_email
+    msg.set_content(text)
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as smtp:
+            if use_tls:
+                smtp.starttls()
+            if smtp_user and smtp_password:
+                smtp.login(smtp_user, smtp_password)
+            smtp.send_message(msg)
+        print(f"[joint] Sent shared invite email to {attendee_email} (invite_id={invite_id})")
+    except Exception as e:
+        print(f"[joint] Failed to send shared invite email to {attendee_email}: {e}")
+
+
+async def _create_and_send_shared_invite(
+    *,
+    requester_email: str,
+    attendee_email: str,
+    bundle: dict,
+) -> None:
+    requester_email = (requester_email or "").strip().lower()
+    attendee_email = (attendee_email or "").strip().lower()
+    if not requester_email or not attendee_email:
+        return
+
+    parts = bundle.get("parts") or []
+    if not parts:
+        return
+    first_part = parts[0]
+    title = str(first_part.get("title") or bundle.get("title") or "Shared event")
+    event_time_text = _format_event_time_for_email(first_part)
+
+    try:
+        db = get_db()
+        doc_ref = db.collection(SHARED_INVITES_COLLECTION).document()
+        payload = {
+            "requester_email": requester_email,
+            "attendee_email": attendee_email,
+            "status": "pending",
+            "decision_source": "email",
+            "title": title,
+            "time_text": event_time_text,
+            "parts": parts,
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        await doc_ref.set(payload)
+        _send_shared_invite_email(
+            requester_email=requester_email,
+            attendee_email=attendee_email,
+            invite_id=doc_ref.id,
+            title=title,
+            event_time_text=event_time_text,
+        )
+    except Exception as e:
+        print(f"[joint] Failed to create shared invite for {attendee_email}: {e}")
 
 
 # ── Bandit persistence helpers ────────────────────────────────────────────────
@@ -172,6 +357,56 @@ class UserOut(BaseModel):
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
+async def _update_user_summary(user_id: str) -> None:
+    """Regenerate and persist the AI user summary for *user_id* (Firebase UID).
+
+    Fetches the user's reflections, calls Groq for a fresh summary, and merges
+    it into the corresponding Firestore user document.  Failures are logged but
+    never raised so that the calling endpoint always succeeds.
+    """
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        return
+    try:
+        db = get_db()
+        col = db.collection(COLLECTION)
+        reflections = [doc.to_dict() async for doc in col.where("userId", "==", user_id).stream()]
+        if not reflections:
+            return
+
+        prompt = _build_insights_prompt(reflections, [], user_type=None)
+
+        client = AsyncGroq(api_key=api_key)
+        completion = await client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You are CalCoach, a productivity coach. Always respond with valid JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.7,
+            max_tokens=600,
+        )
+        raw = completion.choices[0].message.content or "{}"
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = {}
+
+        user_summary_text = (parsed.get("user_summary") or "").strip()
+        if not user_summary_text:
+            return
+
+        doc_ref = db.collection(USERS_COLLECTION).document(user_id)
+        await doc_ref.set(
+            {"user_summary": {"ai_summary": user_summary_text, "ai_summary_updated_at": datetime.now(timezone.utc).isoformat() + "Z"}},
+            merge=True,
+        )
+        print(f"[summary] Updated user_summary for uid={user_id}")
+    except Exception as e:
+        print(f"[summary] Failed to update user_summary for uid={user_id}: {e}")
+
 
 @app.get("/reflections", response_model=List[ReflectionOut])
 async def list_reflections(session_id: Optional[str] = None, user_id: Optional[str] = None):
@@ -566,6 +801,7 @@ class CalendarEvent(BaseModel):
     startHour: int
     startMin: int
     durationMins: int
+    recurrence: List[str] = []
 
 
 class RankedSuggestion(BaseModel):
@@ -596,6 +832,37 @@ class ChatResponse(BaseModel):
     events_to_create: List[CalendarEvent] = []       # backwards compat (non-scheduling replies)
     pending_suggestions: List[RankedSuggestion] = [] # ranked scheduling suggestions
     updated_history: List[HistoryMessage] = []
+
+
+@app.get("/shared-invites/respond")
+async def respond_to_shared_invite(
+    invite_id: str = Query(...),
+    decision: str = Query(..., pattern="^(accept|reject|propose)$"),
+    redirect: Optional[str] = Query(None),
+):
+    invite_id = (invite_id or "").strip()
+    if not invite_id:
+        raise HTTPException(status_code=400, detail="invite_id is required")
+    try:
+        db = get_db()
+        doc_ref = db.collection(SHARED_INVITES_COLLECTION).document(invite_id)
+        doc = await doc_ref.get()
+        if not doc.exists:
+            raise HTTPException(status_code=404, detail="Invite not found")
+        await doc_ref.set(
+            {
+                "status": decision,
+                "responded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            },
+            merge=True,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update invite: {e}")
+
+    destination = (redirect or os.getenv("CALCOACH_FRONTEND_URL", "http://localhost:3000")).strip()
+    return RedirectResponse(destination)
 
 
 HISTORY_THRESHOLD = 8
@@ -689,6 +956,17 @@ When filling "candidate_slots" (new scheduling request only):
 - MULTI-BLOCK one option (e.g. 4 hours as four 1-hour sessions): ONE object with the same title/description/reasoning at the top level, plus a "blocks" array. Each block must have: date, startHour, startMin, durationMins (optional title/description override per block). Do NOT split one option into multiple top-level candidate_slots entries.
 - DURATION RULE (hard): for every option, the sum of all blocks' durationMins MUST equal the total time the user asked to schedule. If the user asks for 2 hours, every option must total exactly 120 minutes. This is non-negotiable — never under- or over-schedule.
 - Leave "events_to_create" as an empty array
+
+=== RECURRING EVENTS ===
+
+When the user asks to add or create a RECURRING event (e.g. "every Tuesday", "weekly gym session", "daily standup"), use "events_to_create" (NOT candidate_slots). Include a "recurrence" field on the event using RRULE format:
+- Weekly on Tuesday: "recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=TU"]
+- Daily: "recurrence": ["RRULE:FREQ=DAILY"]
+- Weekly on Mon, Wed, Fri: "recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR"]
+- If the user says "for N weeks" or "N times", add COUNT: e.g. "RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=8"
+- If the user says "until <date>", add UNTIL: e.g. "RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20261231"
+- If no end is specified, ask the user how long the series should run before creating it.
+BYDAY codes: SU=Sunday, MO=Monday, TU=Tuesday, WE=Wednesday, TH=Thursday, FR=Friday, SA=Saturday
 
 When NOT scheduling (questions, advice, follow-up chat, reactions to previous suggestions, general conversation):
 - Set "reply" to your answer
@@ -1689,6 +1967,12 @@ async def chat(body: ChatMessage):
                     "Options are shown on your calendar. Use ✓ on the highlighted suggestion to add all its blocks, or ✗ to dismiss."
                 )
                 reply = "\n".join(reply_lines)
+                if attendee_email and requester_email and ranked_bundles:
+                    await _create_and_send_shared_invite(
+                        requester_email=requester_email,
+                        attendee_email=attendee_email,
+                        bundle=ranked_bundles[0],
+                    )
         else:
             # No scheduling — use events_to_create directly (backwards compat)
             events = [CalendarEvent(**e) for e in events_raw if isinstance(e, dict)]
@@ -1836,11 +2120,35 @@ async def onboarding(body: OnboardingIn):
 
         print(f"[Onboarding] Applied survey: work={work_start}-{work_end}, avoid={avoid_days}, chunk={pref_chunk}min")
         if _current_user_email:
+            try:
+                db = get_db()
+                doc_ref = db.collection(USERS_COLLECTION).document(_current_user_email)
+                await doc_ref.set({"survey_answers": body.dict()}, merge=True)
+            except Exception as save_err:
+                print(f"[Onboarding] Failed to save survey_answers: {save_err}")
             await _save_bandit_state(_current_user_email)
         return {"ok": True, "rl_active": True}
     except Exception as e:
         print(f"[Onboarding] Error: {e}")
         return {"ok": False, "message": str(e)}
+
+
+@app.get("/preferences")
+async def get_preferences(email: str):
+    """Return saved survey answers for a user so the preferences tab can pre-populate."""
+    if not email:
+        raise HTTPException(400, "email is required")
+    try:
+        db = get_db()
+        doc_ref = db.collection(USERS_COLLECTION).document(email.strip().lower())
+        doc = await doc_ref.get()
+        if doc.exists:
+            data = doc.to_dict() or {}
+            return {"ok": True, "survey_answers": data.get("survey_answers")}
+        return {"ok": True, "survey_answers": None}
+    except Exception as e:
+        print(f"[Preferences] Error fetching preferences for {email}: {e}")
+        return {"ok": False, "survey_answers": None}
 
 
 # ── RL status endpoint (for testing/debugging) ────────────────────────────────
