@@ -536,20 +536,51 @@ body {
 }
 
 .chat-ctrl-btn {
-  width: 26px;
-  height: 26px;
-  border: 1px solid #dadce0;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
   border-radius: 6px;
-  background: #fff;
-  color: #5f6368;
   cursor: pointer;
   line-height: 1;
-  font-size: 13px;
+  font-size: 15px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
 }
 
-.chat-ctrl-btn:hover {
-  background: #f1f3f4;
-  color: #202124;
+.chat-ctrl-btn:active {
+  transform: scale(0.94);
+}
+
+.chat-ctrl-btn:focus-visible {
+  outline: 2px solid #1a73e8;
+  outline-offset: 1px;
+}
+
+.chat-ctrl-btn--reset {
+  background: #e8f0fe;
+  color: #1a73e8;
+  border-color: #d2e3fc;
+}
+
+.chat-ctrl-btn--reset:hover {
+  background: #1a73e8;
+  color: #fff;
+  border-color: #1a73e8;
+}
+
+.chat-ctrl-btn--close {
+  background: #fce8e6;
+  color: #d93025;
+  border-color: #f6cfcc;
+}
+
+.chat-ctrl-btn--close:hover {
+  background: #d93025;
+  color: #fff;
+  border-color: #d93025;
 }
 
 .chat-messages {
