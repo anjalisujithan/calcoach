@@ -86,16 +86,21 @@ export default function PreferencesTab({ userEmail }: Props) {
       const res = await fetch(`${API}/onboarding`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(answers),
+        body: JSON.stringify({ ...answers, email: userEmail }),
       });
-      const data = await res.json();
-      if (data.ok !== false) {
+      const data = await res.json().catch(() => ({}));
+      // The backend returns `ok: true` only when the survey was actually
+      // persisted to Firestore. Anything else (no email, save error, etc.)
+      // should surface as an error so we don't lie to the user.
+      if (res.ok && data.ok === true) {
         localStorage.setItem('calcoach_survey_answers', JSON.stringify(answers));
         setStatus('success');
       } else {
+        console.warn('Failed to save preferences:', data);
         setStatus('error');
       }
-    } catch {
+    } catch (err) {
+      console.warn('Failed to save preferences:', err);
       setStatus('error');
     } finally {
       setSaving(false);

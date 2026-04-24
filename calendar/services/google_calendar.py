@@ -68,36 +68,19 @@ class GoogleCalendarService:
         now = datetime.now(timezone.utc)
         time_min = (now - timedelta(days=days_back)).isoformat()
         time_max = (now + timedelta(days=days_ahead)).isoformat()
-
-        calendars = self.get_calendar_list()
-        per_cal = max(100, max_results // max(len(calendars), 1))
-        all_events: list = []
-
-        for cal in calendars:
-            try:
-                result = (
-                    self.service.events()
-                    .list(
-                        calendarId=cal["id"],
-                        timeMin=time_min,
-                        timeMax=time_max,
-                        maxResults=per_cal,
-                        singleEvents=True,
-                        orderBy="startTime",
-                    )
-                    .execute()
-                )
-                events = result.get("items", [])
-                for e in events:
-                    e["_calendarId"] = cal["id"]
-                all_events.extend(events)
-            except HttpError:
-                pass  # skip calendars with permission issues
-
-        all_events.sort(
-            key=lambda e: e.get("start", {}).get("dateTime", e.get("start", {}).get("date", ""))
+        result = (
+            self.service.events()
+            .list(
+                calendarId="primary",
+                timeMin=time_min,
+                timeMax=time_max,
+                maxResults=max_results,
+                singleEvents=True,
+                orderBy="startTime",
+            )
+            .execute()
         )
-        return all_events
+        return result.get("items", [])
 
     def list_events_between(self, time_min: str, time_max: str, max_results: int = 500) -> list:
         result = (
@@ -142,7 +125,7 @@ class GoogleCalendarService:
                 return
             raise
 
-    def update_event(self, event_id: str, summary: str, start: str, end: str, description: str = "", location: str = "", location_type: str = "room", timezone: str = "America/Los_Angeles", visibility: str = "default", calendar_id: str = "primary", recurrence: list = []) -> dict:
+    def update_event(self, event_id: str, summary: str, start: str, end: str, description: str = "", location: str = "", location_type: str = "room", timezone: str = "America/Los_Angeles", visibility: str = "default", calendar_id: str = "primary", recurrence: list = [], color: str = "#4285f4") -> dict:
         body = {
             "summary": summary,
             "description": description,
@@ -151,14 +134,13 @@ class GoogleCalendarService:
             "start": {"dateTime": start, "timeZone": timezone},
             "end": {"dateTime": end, "timeZone": timezone},
             "extendedProperties": {
-                "private": {"locationType": location_type}
+                "private": {"locationType": location_type, "calcoachColor": color}
             },
         }
-        if recurrence:
-            body["recurrence"] = recurrence
+        body["recurrence"] = recurrence  # always set — empty list clears recurrence on GCal
         return self.service.events().patch(calendarId=calendar_id, eventId=event_id, body=body).execute()
 
-    def add_event(self, summary: str, start: str, end: str, description: str = "", location: str = "", location_type: str = "room", timezone: str = "America/Los_Angeles", visibility: str = "default", calendar_id: str = "primary", recurrence: list = []) -> dict:
+    def add_event(self, summary: str, start: str, end: str, description: str = "", location: str = "", location_type: str = "room", timezone: str = "America/Los_Angeles", visibility: str = "default", calendar_id: str = "primary", recurrence: list = [], color: str = "#4285f4") -> dict:
         event = {
             "summary": summary,
             "description": description,
@@ -166,9 +148,8 @@ class GoogleCalendarService:
             "visibility": visibility,
             "start": {"dateTime": start, "timeZone": timezone},
             "end": {"dateTime": end, "timeZone": timezone},
-            "colorId": "9",
             "extendedProperties": {
-                "private": {"calcoach": "true", "locationType": location_type}
+                "private": {"calcoach": "true", "locationType": location_type, "calcoachColor": color}
             },
         }
         if recurrence:

@@ -2117,79 +2117,103 @@ class OnboardingIn(BaseModel):
     workStyle: str = ""
     planningHorizon: str = ""
     chunkSize: str = ""
+    email: Optional[str] = None  # identifies which user doc to persist to
 
 
 @app.post("/onboarding")
 async def onboarding(body: OnboardingIn):
     """
-    Apply survey answers to the user profile so the bandit starts with
-    meaningful priors instead of a cold start.
+    Persist survey answers for the user and apply them to the in-memory
+    RL profile so the bandit starts with meaningful priors instead of a
+    cold start. The email can come from the request body (preferred) or
+    fall back to the most recently registered user.
     """
     global _user_profile
-    if not _RL_AVAILABLE or _user_profile is None:
-        return {"ok": True, "rl_active": False}
 
-    try:
-        # Map survey work hours to user preferences
-        work_start = f"{body.workStartHour:02d}:00"
-        work_end = f"{body.workEndHour:02d}:00"
-        avoid_days: List[str] = []
-        if "weekdays" in body.workDays and "weekends" not in body.workDays:
-            avoid_days = ["Saturday", "Sunday"]
-        elif "weekends" in body.workDays and "weekdays" not in body.workDays:
-            avoid_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    # Resolve which user doc to write to. Prefer the explicit email from
+    # the client so saves don't silently no-op after a backend restart.
+    email = (body.email or "").strip().lower()
+    if not email:
+        email = (_current_user_email or "").strip().lower()
 
-        # Map chunk size to preferred duration
-        chunk_map = {
-            "15_30": (15, 30),
-            "30_60": (30, 60),
-            "60_90": (60, 90),
-            "90_plus": (90, 180),
-        }
-        pref_chunk, max_chunk = chunk_map.get(body.chunkSize, (45, 90))
+    # Build the survey dict we'll persist (excluding the transport-only email field).
+    survey_dict = body.dict(exclude={"email"})
 
-        # Rebuild user preferences from survey answers
-        _user_profile.preferences.work_start = work_start
-        _user_profile.preferences.work_end = work_end
-        _user_profile.preferences.avoid_days = avoid_days
-        _user_profile.preferences.preferred_chunk_minutes = pref_chunk
-        _user_profile.preferences.max_daily_work_minutes = (body.workEndHour - body.workStartHour) * 60
+    saved_to_firestore = False
+    save_error: Optional[str] = None
+    if email:
+        try:
+            db = get_db()
+            doc_ref = db.collection(USERS_COLLECTION).document(email)
+            await doc_ref.set({"survey_answers": survey_dict}, merge=True)
+            saved_to_firestore = True
+            print(f"[Onboarding] Saved survey_answers for {email}")
+        except Exception as save_err:
+            save_error = str(save_err)
+            print(f"[Onboarding] Failed to save survey_answers for {email}: {save_err}")
+    else:
+        save_error = "no user email available — cannot persist preferences"
+        print(f"[Onboarding] {save_error}")
 
-        # Seed bandit with a few synthetic updates to nudge priors
-        # Morning preference: if user chose early start, reward morning slots
-        from datetime import time as _time_cls
-        if body.workStartHour <= 10:
-            for h in [9, 10]:
-                fake_block = Block(day="Monday", start=_time_cls(h, 0), end=_time_cls(h + 1, 0), duration_minutes=60)
-                fake_cand = CandidateSchedule(blocks=[fake_block], total_minutes=60, strategy=f"morning_{h}")
-                fake_task = TaskRequest(task_name="seed", total_duration_minutes=60, task_type="other",
-                                        deadline_day="Sunday", preferred_chunk_minutes=pref_chunk,
-                                        min_chunk_minutes=15, max_chunk_minutes=max_chunk)
-                ctx = _extract(fake_cand, _user_profile, fake_task, {})
-                _bandit.update(ctx, 0.4, _user_profile)   # mild positive
-        elif body.workStartHour >= 14:
-            for h in [14, 16]:
-                fake_block = Block(day="Monday", start=_time_cls(h, 0), end=_time_cls(h + 1, 0), duration_minutes=60)
-                fake_cand = CandidateSchedule(blocks=[fake_block], total_minutes=60, strategy=f"afternoon_{h}")
-                fake_task = TaskRequest(task_name="seed", total_duration_minutes=60, task_type="other",
-                                        deadline_day="Sunday", preferred_chunk_minutes=pref_chunk,
-                                        min_chunk_minutes=15, max_chunk_minutes=max_chunk)
-                ctx = _extract(fake_cand, _user_profile, fake_task, {})
-                _bandit.update(ctx, 0.4, _user_profile)
+    # Apply to in-memory RL profile if RL is available.
+    rl_active = False
+    if _RL_AVAILABLE and _user_profile is not None:
+        try:
+            work_start = f"{body.workStartHour:02d}:00"
+            work_end = f"{body.workEndHour:02d}:00"
+            avoid_days: List[str] = []
+            if "weekdays" in body.workDays and "weekends" not in body.workDays:
+                avoid_days = ["Saturday", "Sunday"]
+            elif "weekends" in body.workDays and "weekdays" not in body.workDays:
+                avoid_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 
-        print(f"[Onboarding] Applied survey: work={work_start}-{work_end}, avoid={avoid_days}, chunk={pref_chunk}min")
-        if _current_user_email:
-            try:
-                db = get_db()
-                doc_ref = db.collection(USERS_COLLECTION).document(_current_user_email)
-                await doc_ref.set({"survey_answers": body.dict()}, merge=True)
-            except Exception as save_err:
-                print(f"[Onboarding] Failed to save survey_answers: {save_err}")
-            await _save_bandit_state(_current_user_email)
-        return {"ok": True, "rl_active": True}
-    except Exception as e:
-        print(f"[Onboarding] Error: {e}")
-        return {"ok": False, "message": str(e)}
+            chunk_map = {
+                "15_30": (15, 30),
+                "30_60": (30, 60),
+                "60_90": (60, 90),
+                "90_plus": (90, 180),
+            }
+            pref_chunk, max_chunk = chunk_map.get(body.chunkSize, (45, 90))
+
+            _user_profile.preferences.work_start = work_start
+            _user_profile.preferences.work_end = work_end
+            _user_profile.preferences.avoid_days = avoid_days
+            _user_profile.preferences.preferred_chunk_minutes = pref_chunk
+            _user_profile.preferences.max_daily_work_minutes = (body.workEndHour - body.workStartHour) * 60
+
+            from datetime import time as _time_cls
+            if body.workStartHour <= 10:
+                for h in [9, 10]:
+                    fake_block = Block(day="Monday", start=_time_cls(h, 0), end=_time_cls(h + 1, 0), duration_minutes=60)
+                    fake_cand = CandidateSchedule(blocks=[fake_block], total_minutes=60, strategy=f"morning_{h}")
+                    fake_task = TaskRequest(task_name="seed", total_duration_minutes=60, task_type="other",
+                                            deadline_day="Sunday", preferred_chunk_minutes=pref_chunk,
+                                            min_chunk_minutes=15, max_chunk_minutes=max_chunk)
+                    ctx = _extract(fake_cand, _user_profile, fake_task, {})
+                    _bandit.update(ctx, 0.4, _user_profile)
+            elif body.workStartHour >= 14:
+                for h in [14, 16]:
+                    fake_block = Block(day="Monday", start=_time_cls(h, 0), end=_time_cls(h + 1, 0), duration_minutes=60)
+                    fake_cand = CandidateSchedule(blocks=[fake_block], total_minutes=60, strategy=f"afternoon_{h}")
+                    fake_task = TaskRequest(task_name="seed", total_duration_minutes=60, task_type="other",
+                                            deadline_day="Sunday", preferred_chunk_minutes=pref_chunk,
+                                            min_chunk_minutes=15, max_chunk_minutes=max_chunk)
+                    ctx = _extract(fake_cand, _user_profile, fake_task, {})
+                    _bandit.update(ctx, 0.4, _user_profile)
+
+            print(f"[Onboarding] Applied survey: work={work_start}-{work_end}, avoid={avoid_days}, chunk={pref_chunk}min")
+            if email:
+                await _save_bandit_state(email)
+            rl_active = True
+        except Exception as rl_err:
+            print(f"[Onboarding] RL application failed (non-fatal): {rl_err}")
+
+    return {
+        "ok": saved_to_firestore,
+        "rl_active": rl_active,
+        "saved": saved_to_firestore,
+        "message": save_error,
+    }
 
 
 @app.get("/preferences")

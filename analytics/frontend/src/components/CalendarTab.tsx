@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import WeekCalendar, { Session, CalendarMeta, detectLocationType, getDefaultTimezone } from './WeekCalendar';
+import WeekCalendar, { Session, detectLocationType, getDefaultTimezone } from './WeekCalendar';
 import ChatBar, { Message } from './ChatBar';
 import EventModal from './EventModal';
 import { ReflectionEntry } from './ReflectionPanel';
@@ -57,7 +57,7 @@ function googleEventToSession(event: any): Session | null {
     startHour: start.getHours(),
     startMin: start.getMinutes(),
     durationMins,
-    color: GCAL_COLORS[event.colorId] ?? '#4285f4',
+    color: event.extendedProperties?.private?.calcoachColor ?? GCAL_COLORS[event.colorId] ?? '#4285f4',
     recurrence: event.recurrence,
     recurringEventId: event.recurringEventId,
     attendees: event.attendees ?? [],
@@ -78,6 +78,7 @@ function sessionToPayload(s: Omit<Session, 'id'>) {
     startMin: s.startMin,
     durationMins: s.durationMins,
     recurrence: s.recurrence ?? [],
+    color: s.color ?? '#4285f4',
   };
 }
 
@@ -109,9 +110,6 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [categories, setCategories] = useState<string[]>(loadCategories);
   const [newEventDraft, setNewEventDraft] = useState<{ date: string; startHour: number; startMin: number; durationMins: number } | null>(null);
-  const [calendars, setCalendars] = useState<CalendarMeta[]>([]);
-  const [visibleCalendarIds, setVisibleCalendarIds] = useState<Set<string>>(new Set(['primary']));
-  const calInitialized = useRef(false);
 
   function handleAddCategory(cat: string) {
     setCategories(prev => {
@@ -131,16 +129,6 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   }
 
   useEffect(() => { onSessionsChange?.(sessions); }, [sessions, onSessionsChange]);
-
-  // On first calendar load, default visibility to the primary calendar only
-  useEffect(() => {
-    if (calendars.length === 0 || calInitialized.current) return;
-    calInitialized.current = true;
-    const primary = calendars.find(c => c.primary);
-    const init = new Set<string>(['primary']);
-    if (primary) init.add(primary.id);
-    setVisibleCalendarIds(init);
-  }, [calendars]);
 
   const localIds = useRef<Set<string>>(new Set());
   const inFlightController = useRef<AbortController | null>(null);
@@ -200,10 +188,6 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   useEffect(() => {
     if (!authenticated) return;
     fetchEvents();
-    fetch(`${CALENDAR_API}/calendar/calendars`, { credentials: 'include' })
-      .then(r => r.json())
-      .then(data => setCalendars(data.calendars ?? []))
-      .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authenticated]);
 
@@ -217,6 +201,10 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(sessionToPayload(s)),
       });
+      // Resync to pick up all expanded recurring instances (or remove them when recurrence cleared)
+      const prevRecurrence = sessions.find(e => e.id === id)?.recurrence ?? [];
+      const newRecurrence = s.recurrence ?? [];
+      if (prevRecurrence.length > 0 || newRecurrence.length > 0) fetchEvents();
     } catch { /* optimistic */ }
   }
 
@@ -521,66 +509,6 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
     }));
   }
 
-  // Only show sessions from calendars the user has checked
-  const visibleSessions = sessions.filter(
-    s => s.pending || visibleCalendarIds.has(s.calendarId ?? 'primary')
-  );
-
-  function toggleCalendar(id: string) {
-    setVisibleCalendarIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        if (next.size === 1) return prev; // keep at least one visible
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-  }
-
-  // Per-calendar color indicator + toggle pill
-  const calFilterBar = calendars.length > 1 ? (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: '6px',
-      padding: '5px 16px', borderBottom: '1px solid #e0e0e0',
-      background: '#fff', flexShrink: 0, flexWrap: 'wrap',
-    }}>
-      <span style={{ fontSize: '11px', color: '#9aa0a6', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.4px', flexShrink: 0, marginRight: '2px' }}>
-        Calendars:
-      </span>
-      {calendars.map(c => {
-        const on = visibleCalendarIds.has(c.id);
-        const col = c.backgroundColor ?? '#4285f4';
-        return (
-          <button
-            key={c.id}
-            onClick={() => toggleCalendar(c.id)}
-            title={c.primary ? `${c.summary} (default)` : c.summary}
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: '5px',
-              padding: '2px 10px 2px 7px', borderRadius: '20px', border: 'none',
-              outline: `1.5px solid ${on ? col : '#e0e0e0'}`,
-              background: on ? `${col}1a` : 'transparent',
-              cursor: 'pointer', fontSize: '12px',
-              color: on ? '#202124' : '#9aa0a6',
-              fontWeight: c.primary ? 600 : 400,
-              transition: 'all 0.12s', flexShrink: 0, maxWidth: '200px',
-            }}
-          >
-            <span style={{
-              width: '8px', height: '8px', borderRadius: '50%', flexShrink: 0,
-              background: on ? col : '#d0d0d0', display: 'inline-block',
-            }} />
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {c.summary}{c.primary ? ' ★' : ''}
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  ) : null;
-
   const resyncBtn = (
     <>
       {authenticated === true && (
@@ -634,9 +562,8 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   return (
     <div className="tab-layout">
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
-        {calFilterBar}
         <WeekCalendar
-          sessions={visibleSessions}
+          sessions={sessions}
           selectedSession={selectedSessionId}
           onSelectSession={setSelectedSessionId}
           onAddSession={handleAddSession}
@@ -648,7 +575,6 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           categories={categories}
           onAddCategory={handleAddCategory}
           onDeleteCategory={handleDeleteCategory}
-          calendars={calendars}
           toolbarExtra={resyncBtn}
         />
       </div>
@@ -673,7 +599,6 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           categories={categories}
           onAddCategory={handleAddCategory}
           onDeleteCategory={handleDeleteCategory}
-          calendars={calendars}
           onClose={() => setSelectedSessionId(null)}
           onSave={handleEditSession}
           onDelete={handleDeleteSession}
@@ -698,7 +623,6 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           categories={categories}
           onAddCategory={handleAddCategory}
           onDeleteCategory={handleDeleteCategory}
-          calendars={calendars}
           onClose={() => setNewEventDraft(null)}
           onSave={handleSaveNew}
           onDelete={() => setNewEventDraft(null)}
