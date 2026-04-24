@@ -27,13 +27,13 @@ function AppShell() {
 
   useEffect(() => {
     if (!user) return;
-    fetch(`${API}/reflections?user_id=${encodeURIComponent(user.uid)}`)
+    fetch(`${API}/reflections?user_id=${encodeURIComponent(user.email ?? '')}`)
       .then(r => r.json())
       .then((data: ReflectionEntry[]) => {
         setReflections(data);
       })
       .catch(() => {});
-  }, [user?.uid]);
+  }, [user?.email]);
 
   function handleSurveyComplete(_answers: SurveyAnswers) {
     setShowSurvey(false);
@@ -50,7 +50,7 @@ function AppShell() {
   async function handleSaveReflection(entry: Omit<ReflectionEntry, 'id' | 'savedAt'>) {
     const newEntry: ReflectionEntry = {
       ...entry,
-      userId: user!.uid,
+      userId: user!.email ?? '',
       id: mkId(),
       savedAt: new Date().toISOString(),
     };
@@ -94,7 +94,7 @@ function AppShell() {
           <CalendarTab reflections={reflections} onSaveReflection={handleSaveReflection} onSessionsChange={setSessions} userEmail={user.email ?? ''} />
         </div>
         <div style={{ display: activeTab === 'analytics' ? undefined : 'none', height: '100%' }}>
-          <AnalyticsTab reflections={reflections} sessions={sessions} userId={user.uid} userEmail={user.email ?? ''} />
+          <AnalyticsTab reflections={reflections} sessions={sessions} userEmail={user.email ?? ''} />
         </div>
         <div style={{ display: activeTab === 'preferences' ? undefined : 'none', height: '100%' }}>
           <PreferencesTab userEmail={user.email ?? ''} />

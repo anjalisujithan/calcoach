@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Session } from './WeekCalendar';
+import { Session, LocationType, CalendarMeta, AddressSearch, detectLocationType, getDefaultTimezone, TIMEZONES } from './WeekCalendar';
 import { ReflectionEntry } from './ReflectionPanel';
 
 const FACES = [
@@ -268,6 +268,7 @@ interface Props {
   categories?: string[];
   onAddCategory?: (cat: string) => void;
   onDeleteCategory?: (cat: string) => void;
+  calendars?: CalendarMeta[];
   onClose: () => void;
   onSave: (id: string, s: Omit<Session, 'id'>) => void;
   onDelete: (id: string) => void;
@@ -275,12 +276,20 @@ interface Props {
   onSaveReflection: (entry: Omit<ReflectionEntry, 'id' | 'savedAt'>) => void;
 }
 
-export default function EventModal({ session, reflections, categories = [], onAddCategory, onDeleteCategory, onClose, onSave, onDelete, onDeleteSeries, onSaveReflection }: Props) {
+export default function EventModal({ session, reflections, categories = [], onAddCategory, onDeleteCategory, calendars = [], onClose, onSave, onDelete, onDeleteSeries, onSaveReflection }: Props) {
   const isNew = session.id === '__new__';
   const initStart = toTimeStr(session.startHour, session.startMin);
   const initEnd = addMinsStr(initStart, session.durationMins);
 
   const [title, setTitle] = useState(session.title);
+  const [location, setLocation] = useState(session.location ?? '');
+  const [locationType, setLocationType] = useState<LocationType>(
+    session.locationType ?? detectLocationType(session.location ?? '')
+  );
+  const [timezone, setTimezone] = useState(session.timezone ?? getDefaultTimezone());
+  const [description, setDescription] = useState(session.description ?? '');
+  const [calendarId, setCalendarId] = useState(session.calendarId ?? 'primary');
+  const [visibility, setVisibility] = useState(session.visibility ?? 'default');
   const [date, setDate] = useState(session.date);
   const [startTime, setStartTime] = useState(initStart);
   const [endTime, setEndTime] = useState(initEnd);
@@ -290,6 +299,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
   const [newCatInput, setNewCatInput] = useState('');
   const [editSaved, setEditSaved] = useState(false);
   const [recurrenceKey, setRecurrenceKey] = useState<string>(() => rruleToKey(session.recurrence));
+  const [moreInfoOpen, setMoreInfoOpen] = useState(false);
 
   const [productivity, setProductivity] = useState<number | null>(null);
   const [sessionLength, setSessionLength] = useState<'too_short' | 'just_right' | 'too_long' | null>(null);
@@ -303,6 +313,12 @@ export default function EventModal({ session, reflections, categories = [], onAd
     setLastId(session.id);
     const s = toTimeStr(session.startHour, session.startMin);
     setTitle(session.title);
+    setLocation(session.location ?? '');
+    setLocationType(session.locationType ?? detectLocationType(session.location ?? ''));
+    setTimezone(session.timezone ?? getDefaultTimezone());
+    setDescription(session.description ?? '');
+    setCalendarId(session.calendarId ?? 'primary');
+    setVisibility(session.visibility ?? 'default');
     setDate(session.date);
     setStartTime(s);
     setEndTime(addMinsStr(s, session.durationMins));
@@ -312,6 +328,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
     setNewCatInput('');
     setEditSaved(false);
     setRecurrenceKey(rruleToKey(session.recurrence));
+    setMoreInfoOpen(false);
     setProductivity(null);
     setSessionLength(null);
     setTiming(null);
@@ -332,7 +349,12 @@ export default function EventModal({ session, reflections, categories = [], onAd
     const [h, m] = startTime.split(':').map(Number);
     onSave(session.id, {
       title: title.trim() || session.title,
-      description: session.description,
+      description,
+      location: location || undefined,
+      locationType: location ? locationType : undefined,
+      timezone: timezone || getDefaultTimezone(),
+      calendarId: calendarId || 'primary',
+      visibility: visibility || 'default',
       date,
       dayIndex: new Date(date + 'T12:00:00').getDay(),
       startHour: h,
@@ -351,6 +373,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
       sessionId: session.id,
       title: session.title,
       description: session.description,
+      location: location || undefined,
       date: session.date,
       startTime,
       endTime,
@@ -399,9 +422,9 @@ export default function EventModal({ session, reflections, categories = [], onAd
           background: '#fff',
           borderRadius: '12px',
           boxShadow: '0 8px 40px rgba(0,0,0,0.18)',
-          width: '700px',
+          width: '900px',
           maxWidth: '96vw',
-          maxHeight: '88vh',
+          maxHeight: '92vh',
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',
@@ -486,8 +509,8 @@ export default function EventModal({ session, reflections, categories = [], onAd
 
           {/* ── Left: Edit ── */}
           <div style={{
-            flex: '0 0 300px',
-            padding: '16px 20px',
+            flex: '0 0 420px',
+            padding: '20px 24px',
             overflowY: 'auto',
             borderRight: '1px solid #e8eaed',
             display: 'flex',
@@ -502,7 +525,6 @@ export default function EventModal({ session, reflections, categories = [], onAd
               <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Event title" />
             </div>
 
-            {/* Date */}
             <div className="modal-field">
               <label>Date</label>
               <input type="date" value={date} onChange={e => setDate(e.target.value)} />
@@ -521,6 +543,62 @@ export default function EventModal({ session, reflections, categories = [], onAd
                 onChange={setEndTime}
                 minTime={startTime}
               />
+            </div>
+
+            {/* Description */}
+            <div className="modal-field">
+              <label>Description</label>
+              <textarea
+                className="modal-textarea"
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+                placeholder="Add notes or agenda…"
+                rows={4}
+              />
+            </div>
+
+            <div className="modal-field">
+              <label>Location</label>
+              <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+                {locationType === 'address' ? (
+                  <AddressSearch value={location} onChange={setLocation} wrapperStyle={{ flex: 1 }} />
+                ) : (
+                  <div style={{ flex: 1 }}>
+                    <input
+                      value={location}
+                      onChange={e => setLocation(e.target.value)}
+                      placeholder={locationType === 'meeting_link' ? 'Paste meeting link…' : 'Room, building, or anywhere'}
+                      style={{ width: '100%', boxSizing: 'border-box' }}
+                    />
+                    {locationType === 'meeting_link' && /^https?:\/\//i.test(location) && (
+                      <a
+                        href={location}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ display: 'block', marginTop: '0.25rem', fontSize: '0.76rem', color: '#1a73e8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      >↗ {location}</a>
+                    )}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: '0.25rem', flexShrink: 0, alignSelf: 'flex-start' }}>
+                  {([['room', '🏠', 'Room'], ['meeting_link', '🔗', 'Meeting link'], ['address', '📍', 'Address']] as [LocationType, string, string][]).map(([type, icon, ttl]) => (
+                    <button
+                      key={type}
+                      type="button"
+                      title={ttl}
+                      onClick={() => setLocationType(type)}
+                      style={{
+                        width: '36px', height: '36px', borderRadius: '8px', fontSize: '1.05rem',
+                        cursor: 'pointer', flexShrink: 0,
+                        border: locationType === type ? '1.5px solid #4285f4' : '1.5px solid #e0e0e0',
+                        background: locationType === type ? '#e8f0fe' : '#f8f9fa',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        transition: 'border-color 0.15s, background 0.15s',
+                      }}
+                    >{icon}</button>
+                  ))}
+                </div>
+              </div>
             </div>
 
             {/* Recurrence */}
@@ -610,6 +688,77 @@ export default function EventModal({ session, reflections, categories = [], onAd
               </div>
             </div>
 
+            {/* More Info collapsible — advanced fields only */}
+            <div>
+              <button
+                type="button"
+                onClick={() => setMoreInfoOpen(o => !o)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: 'none',
+                  border: '1px solid #dadce0',
+                  borderRadius: '6px',
+                  padding: '6px 12px',
+                  fontSize: '13px',
+                  fontWeight: 500,
+                  color: '#5f6368',
+                  cursor: 'pointer',
+                  width: '100%',
+                  justifyContent: 'space-between',
+                  transition: 'background 0.12s',
+                }}
+                onMouseEnter={e => (e.currentTarget.style.background = '#f1f3f4')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+              >
+                <span>More Info</span>
+                <span style={{ fontSize: '10px', transition: 'transform 0.15s', display: 'inline-block', transform: moreInfoOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>▼</span>
+              </button>
+
+              {moreInfoOpen && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '12px', paddingTop: '12px', borderTop: '1px solid #f1f3f4' }}>
+                  <div className="modal-row">
+                    <div className="modal-field">
+                      <label>Calendar</label>
+                      {calendars.length > 0 ? (
+                        <select value={calendarId} onChange={e => setCalendarId(e.target.value)}>
+                          {calendars.map(c => (
+                            <option key={c.id} value={c.id}>{c.summary}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div style={{ fontSize: '0.82rem', color: '#888', padding: '0.3rem 0' }}>
+                          {calendarId === 'primary' ? 'Primary' : calendarId}
+                        </div>
+                      )}
+                    </div>
+                    <div className="modal-field">
+                      <label>Visibility</label>
+                      <select value={visibility} onChange={e => setVisibility(e.target.value)}>
+                        <option value="default">Default</option>
+                        <option value="public">Public</option>
+                        <option value="private">Private</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="modal-field">
+                    <label>Timezone</label>
+                    <input
+                      list="tz-list-edit"
+                      value={timezone}
+                      onChange={e => setTimezone(e.target.value)}
+                      placeholder="e.g. America/New_York"
+                    />
+                    <datalist id="tz-list-edit">
+                      {TIMEZONES.map(tz => <option key={tz} value={tz} />)}
+                    </datalist>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Actions */}
             <div style={{ display: 'flex', gap: '8px', paddingTop: '4px', flexWrap: 'wrap' }}>
               <button className="btn-save" onClick={handleSaveEdit} disabled={!title.trim()}>
@@ -637,7 +786,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
           {/* ── Right: Reflect ── */}
           <div style={{
             flex: 1,
-            padding: '16px 20px',
+            padding: '20px 24px',
             overflowY: 'auto',
             display: 'flex',
             flexDirection: 'column',
