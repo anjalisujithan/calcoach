@@ -297,12 +297,12 @@ export default function ChatBar({ headerLabel, placeholder, messages, onSend, co
         </span>
         <div className="chat-header-actions">
           {onReset && (
-            <button className="chat-ctrl-btn" onClick={onReset} title="Restart chat">
+            <button className="chat-ctrl-btn chat-ctrl-btn--reset" onClick={onReset} title="Restart chat" aria-label="Restart chat">
               &#8635;
             </button>
           )}
           {onClose && (
-            <button className="chat-ctrl-btn" onClick={onClose} title="Close chat">
+            <button className="chat-ctrl-btn chat-ctrl-btn--close" onClick={onClose} title="Close chat" aria-label="Close chat">
               &#x2715;
             </button>
           )}
