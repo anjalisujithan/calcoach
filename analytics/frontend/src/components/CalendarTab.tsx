@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import WeekCalendar, { Session } from './WeekCalendar';
+import WeekCalendar, { Session, CalendarMeta, detectLocationType, getDefaultTimezone } from './WeekCalendar';
 import ChatBar, { Message } from './ChatBar';
 import EventModal from './EventModal';
 import { ReflectionEntry } from './ReflectionPanel';
@@ -41,10 +41,17 @@ function googleEventToSession(event: any): Session | null {
   const start = new Date(startStr);
   const end = new Date(endStr);
   const durationMins = Math.round((end.getTime() - start.getTime()) / 60000);
+  const loc = event.location ?? '';
+  const storedType = event.extendedProperties?.private?.locationType;
   return {
     id: event.id,
     title: event.summary ?? '(No title)',
     description: event.description ?? '',
+    location: loc,
+    locationType: storedType ?? (loc ? detectLocationType(loc) : undefined),
+    timezone: event.start?.timeZone ?? getDefaultTimezone(),
+    calendarId: event._calendarId ?? 'primary',
+    visibility: event.visibility ?? 'default',
     date: startStr.slice(0, 10),
     dayIndex: start.getDay(),
     startHour: start.getHours(),
@@ -59,6 +66,11 @@ function sessionToPayload(s: Omit<Session, 'id'>) {
   return {
     title: s.title,
     description: s.description,
+    location: s.location ?? '',
+    locationType: s.locationType ?? 'room',
+    timezone: s.timezone ?? getDefaultTimezone(),
+    calendarId: s.calendarId ?? 'primary',
+    visibility: s.visibility ?? 'default',
     date: s.date,
     startHour: s.startHour,
     startMin: s.startMin,
@@ -94,6 +106,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   const [refreshing, setRefreshing] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [categories, setCategories] = useState<string[]>(loadCategories);
+  const [calendars, setCalendars] = useState<CalendarMeta[]>([]);
 
   function handleAddCategory(cat: string) {
     setCategories(prev => {
@@ -172,11 +185,16 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   useEffect(() => {
     if (!authenticated) return;
     fetchEvents();
+    fetch(`${CALENDAR_API}/calendar/calendars`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(data => setCalendars(data.calendars ?? []))
+      .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authenticated]);
 
   async function handleEditSession(id: string, s: Omit<Session, 'id'>) {
     setSessions(prev => prev.map(existing => existing.id === id ? { ...s, id } : existing));
+    if (!authenticated) return;
     try {
       await fetch(`${CALENDAR_API}/calendar/events/${id}`, {
         method: 'PATCH',
@@ -188,6 +206,12 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   }
 
   async function handleAddSession(s: Omit<Session, 'id'>) {
+    if (!authenticated) {
+      const id = mkId();
+      localIds.current.add(id);
+      setSessions(prev => [...prev, { ...s, id }]);
+      return;
+    }
     try {
       const res = await fetch(`${CALENDAR_API}/calendar/events`, {
         method: 'POST',
@@ -206,12 +230,15 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   }
 
   async function handleDeleteSession(id: string) {
-    try {
-      await fetch(`${CALENDAR_API}/calendar/events/${id}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      });
-    } catch { /* optimistic */ }
+    if (authenticated) {
+      try {
+        const calId = sessions.find(s => s.id === id)?.calendarId ?? 'primary';
+        await fetch(`${CALENDAR_API}/calendar/events/${id}?calendarId=${encodeURIComponent(calId)}`, {
+          method: 'DELETE',
+          credentials: 'include',
+        });
+      } catch { /* optimistic */ }
+    }
     setSessions(prev => prev.filter(s => s.id !== id));
     setSelectedSessionId(null);
   }
@@ -365,49 +392,51 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
     const newRows: Session[] = [];
     if (info?.events?.length) {
       for (const e of info.events) {
-        try {
-          const res = await fetch(`${CALENDAR_API}/calendar/events`, {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+        if (authenticated) {
+          try {
+            const res = await fetch(`${CALENDAR_API}/calendar/events`, {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                title: stripRank(e.title ?? ''),
+                description: e.description ?? '',
+                date: e.date,
+                startHour: e.startHour,
+                startMin: e.startMin,
+                durationMins: e.durationMins,
+                recurrence: [],
+              }),
+            });
+            const d = await res.json();
+            const gcalId = d.event?.id ?? mkId();
+            newRows.push({
+              id: gcalId,
               title: stripRank(e.title ?? ''),
               description: e.description ?? '',
               date: e.date,
+              dayIndex: new Date(e.date + 'T00:00:00').getDay(),
               startHour: e.startHour,
               startMin: e.startMin,
               durationMins: e.durationMins,
-              recurrence: [],
-            }),
-          });
-          const d = await res.json();
-          const gcalId = d.event?.id ?? mkId();
-          newRows.push({
-            id: gcalId,
-            title: stripRank(e.title ?? ''),
-            description: e.description ?? '',
-            date: e.date,
-            dayIndex: new Date(e.date + 'T00:00:00').getDay(),
-            startHour: e.startHour,
-            startMin: e.startMin,
-            durationMins: e.durationMins,
-            color: '#4285f4',
-          });
-        } catch {
-          const tid = mkId();
-          localIds.current.add(tid);
-          newRows.push({
-            id: tid,
-            title: stripRank(e.title ?? ''),
-            description: e.description ?? '',
-            date: e.date,
-            dayIndex: new Date(e.date + 'T00:00:00').getDay(),
-            startHour: e.startHour,
-            startMin: e.startMin,
-            durationMins: e.durationMins,
-            color: '#4285f4',
-          });
+              color: '#4285f4',
+            });
+            continue;
+          } catch { /* fall through to local */ }
         }
+        const tid = mkId();
+        localIds.current.add(tid);
+        newRows.push({
+          id: tid,
+          title: stripRank(e.title ?? ''),
+          description: e.description ?? '',
+          date: e.date,
+          dayIndex: new Date(e.date + 'T00:00:00').getDay(),
+          startHour: e.startHour,
+          startMin: e.startMin,
+          durationMins: e.durationMins,
+          color: '#4285f4',
+        });
       }
     }
 
@@ -445,59 +474,35 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
     }));
   }
 
-  if (authenticated === null) {
-    return (
-      <div className="tab-layout">
-        <div className="calendar-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <p style={{ color: '#888' }}>Checking Google Calendar connection…</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!authenticated) {
-    return (
-      <div className="tab-layout">
-        <div className="calendar-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ textAlign: 'center' }}>
-            <p style={{ marginBottom: '1rem', color: '#666' }}>Connect your Google Calendar to get started.</p>
-            <a href={`${CALENDAR_API}/auth/login?email=${encodeURIComponent(userEmail)}`} className="btn-save" style={{ textDecoration: 'none', padding: '0.6rem 1.4rem' }}>
-              Connect Google Calendar
-            </a>
-          </div>
-        </div>
-        {chatOpen && (
-          <ChatBar
-            headerLabel="Feedback for generated schedule"
-            placeholder="Schedule Anything"
-            messages={messages}
-            onSend={handleSend}
-            mentionSearchEndpoint={`${ANALYTICS_API}/users/search`}
-            currentUserEmail={userEmail}
-            isLoading={chatLoading}
-            onStop={handleStopChat}
-            onReset={handleRestartChat}
-            onClose={() => setChatOpen(false)}
-          />
-        )}
-      </div>
-    );
-  }
-
   const resyncBtn = (
     <>
-      <button
-        onClick={fetchEvents}
-        disabled={refreshing}
-        style={{
-          background: refreshing ? '#ccc' : '#4285f4',
-          color: '#fff', border: 'none', borderRadius: '6px',
-          padding: '0.4rem 1rem', fontWeight: 600,
-          cursor: refreshing ? 'not-allowed' : 'pointer', fontSize: '0.85rem',
-        }}
-      >
-        {refreshing ? '↻ Syncing…' : '↻ Resync with GCal'}
-      </button>
+      {authenticated === true && (
+        <button
+          onClick={fetchEvents}
+          disabled={refreshing}
+          style={{
+            background: refreshing ? '#ccc' : '#4285f4',
+            color: '#fff', border: 'none', borderRadius: '6px',
+            padding: '0.4rem 1rem', fontWeight: 600,
+            cursor: refreshing ? 'not-allowed' : 'pointer', fontSize: '0.85rem',
+          }}
+        >
+          {refreshing ? '↻ Syncing…' : '↻ Resync with GCal'}
+        </button>
+      )}
+      {authenticated === false && (
+        <a
+          href={`${CALENDAR_API}/auth/login?email=${encodeURIComponent(userEmail)}`}
+          style={{
+            background: '#fff', color: '#3c4043',
+            border: '1px solid #dadce0', borderRadius: '6px',
+            padding: '0.4rem 0.75rem', fontWeight: 600,
+            fontSize: '0.85rem', textDecoration: 'none', display: 'inline-block',
+          }}
+        >
+          Connect Google Calendar
+        </a>
+      )}
       {!chatOpen && (
         <button
           onClick={() => setChatOpen(true)}
@@ -533,6 +538,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
         categories={categories}
         onAddCategory={handleAddCategory}
         onDeleteCategory={handleDeleteCategory}
+        calendars={calendars}
         toolbarExtra={resyncBtn}
       />
       {chatOpen && (
@@ -556,6 +562,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           categories={categories}
           onAddCategory={handleAddCategory}
           onDeleteCategory={handleDeleteCategory}
+          calendars={calendars}
           onClose={() => setSelectedSessionId(null)}
           onSave={handleEditSession}
           onDelete={handleDeleteSession}

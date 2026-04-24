@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Session } from './WeekCalendar';
+import { Session, LocationType, CalendarMeta, AddressSearch, detectLocationType, getDefaultTimezone, TIMEZONES } from './WeekCalendar';
 import { ReflectionEntry } from './ReflectionPanel';
 
 const FACES = [
@@ -56,17 +56,26 @@ interface Props {
   categories?: string[];
   onAddCategory?: (cat: string) => void;
   onDeleteCategory?: (cat: string) => void;
+  calendars?: CalendarMeta[];
   onClose: () => void;
   onSave: (id: string, s: Omit<Session, 'id'>) => void;
   onDelete: (id: string) => void;
   onSaveReflection: (entry: Omit<ReflectionEntry, 'id' | 'savedAt'>) => void;
 }
 
-export default function EventModal({ session, reflections, categories = [], onAddCategory, onDeleteCategory, onClose, onSave, onDelete, onSaveReflection }: Props) {
+export default function EventModal({ session, reflections, categories = [], onAddCategory, onDeleteCategory, calendars = [], onClose, onSave, onDelete, onSaveReflection }: Props) {
   const initStart = toTimeStr(session.startHour, session.startMin);
   const initEnd = addMinsStr(initStart, session.durationMins);
 
   const [title, setTitle] = useState(session.title);
+  const [location, setLocation] = useState(session.location ?? '');
+  const [locationType, setLocationType] = useState<LocationType>(
+    session.locationType ?? detectLocationType(session.location ?? '')
+  );
+  const [timezone, setTimezone] = useState(session.timezone ?? getDefaultTimezone());
+  const [description, setDescription] = useState(session.description ?? '');
+  const [calendarId, setCalendarId] = useState(session.calendarId ?? 'primary');
+  const [visibility, setVisibility] = useState(session.visibility ?? 'default');
   const [date, setDate] = useState(session.date);
   const [startTime, setStartTime] = useState(initStart);
   const [endTime, setEndTime] = useState(initEnd);
@@ -88,6 +97,12 @@ export default function EventModal({ session, reflections, categories = [], onAd
     setLastId(session.id);
     const s = toTimeStr(session.startHour, session.startMin);
     setTitle(session.title);
+    setLocation(session.location ?? '');
+    setLocationType(session.locationType ?? detectLocationType(session.location ?? ''));
+    setTimezone(session.timezone ?? getDefaultTimezone());
+    setDescription(session.description ?? '');
+    setCalendarId(session.calendarId ?? 'primary');
+    setVisibility(session.visibility ?? 'default');
     setDate(session.date);
     setStartTime(s);
     setEndTime(addMinsStr(s, session.durationMins));
@@ -110,7 +125,12 @@ export default function EventModal({ session, reflections, categories = [], onAd
     const [h, m] = startTime.split(':').map(Number);
     onSave(session.id, {
       title: title.trim() || session.title,
-      description: session.description,
+      description,
+      location: location || undefined,
+      locationType: location ? locationType : undefined,
+      timezone: timezone || getDefaultTimezone(),
+      calendarId: calendarId || 'primary',
+      visibility: visibility || 'default',
       date,
       dayIndex: new Date(date + 'T12:00:00').getDay(),
       startHour: h,
@@ -129,6 +149,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
       sessionId: session.id,
       title: session.title,
       description: session.description,
+      location: location || undefined,
       date: session.date,
       startTime,
       endTime,
@@ -193,15 +214,95 @@ export default function EventModal({ session, reflections, categories = [], onAd
           {/* ── Left: Edit ── */}
           <div style={{
             flex: 1, padding: '1rem 1.25rem', overflowY: 'auto',
-            borderRight: '1px solid #e0e0e0',
+            borderRight: '1px solid #f1f3f4',
           }}>
-            <div style={{ fontWeight: 600, fontSize: '0.85rem', color: '#555', marginBottom: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Edit
+            <div style={{ fontWeight: 700, fontSize: '0.7rem', color: '#9aa0a6', marginBottom: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.7px' }}>
+              Edit event
             </div>
 
             <div className="modal-field">
               <label>Title</label>
               <input value={title} onChange={e => setTitle(e.target.value)} />
+            </div>
+
+            <div className="modal-field">
+              <label>Description</label>
+              <textarea
+                className="modal-textarea"
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+                placeholder="Add notes or agenda…"
+                rows={4}
+              />
+            </div>
+
+            <div className="modal-row">
+              <div className="modal-field">
+                <label>Calendar</label>
+                {calendars.length > 0 ? (
+                  <select value={calendarId} onChange={e => setCalendarId(e.target.value)}>
+                    {calendars.map(c => (
+                      <option key={c.id} value={c.id}>{c.summary}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <div style={{ fontSize: '0.82rem', color: '#888', padding: '0.3rem 0' }}>
+                    {calendarId === 'primary' ? 'Primary' : calendarId}
+                  </div>
+                )}
+              </div>
+              <div className="modal-field">
+                <label>Visibility</label>
+                <select value={visibility} onChange={e => setVisibility(e.target.value)}>
+                  <option value="default">Default</option>
+                  <option value="public">Public</option>
+                  <option value="private">Private</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="modal-field">
+              <label>Location</label>
+              <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+                {locationType === 'address' ? (
+                  <AddressSearch value={location} onChange={setLocation} wrapperStyle={{ flex: 1 }} />
+                ) : (
+                  <div style={{ flex: 1 }}>
+                    <input
+                      value={location}
+                      onChange={e => setLocation(e.target.value)}
+                      placeholder={locationType === 'meeting_link' ? 'Paste meeting link…' : 'Room, building, or anywhere'}
+                      style={{ width: '100%', boxSizing: 'border-box' }}
+                    />
+                    {locationType === 'meeting_link' && /^https?:\/\//i.test(location) && (
+                      <a
+                        href={location}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ display: 'block', marginTop: '0.25rem', fontSize: '0.76rem', color: '#1a73e8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      >↗ {location}</a>
+                    )}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: '0.25rem', flexShrink: 0, alignSelf: 'flex-start' }}>
+                  {([['room', '🏠', 'Room'], ['meeting_link', '🔗', 'Meeting link'], ['address', '📍', 'Address']] as [LocationType, string, string][]).map(([type, icon, ttl]) => (
+                    <button
+                      key={type}
+                      type="button"
+                      title={ttl}
+                      onClick={() => setLocationType(type)}
+                      style={{
+                        width: '36px', height: '36px', borderRadius: '8px', fontSize: '1.05rem',
+                        cursor: 'pointer', flexShrink: 0,
+                        border: locationType === type ? '1.5px solid #4285f4' : '1.5px solid #e0e0e0',
+                        background: locationType === type ? '#e8f0fe' : '#f8f9fa',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        transition: 'border-color 0.15s, background 0.15s',
+                      }}
+                    >{icon}</button>
+                  ))}
+                </div>
+              </div>
             </div>
 
             <div className="modal-field">
@@ -222,6 +323,19 @@ export default function EventModal({ session, reflections, categories = [], onAd
                 <label>End</label>
                 <input type="time" value={endTime} onChange={e => setEndTime(e.target.value)} />
               </div>
+            </div>
+
+            <div className="modal-field">
+              <label>Timezone</label>
+              <input
+                list="tz-list-edit"
+                value={timezone}
+                onChange={e => setTimezone(e.target.value)}
+                placeholder="e.g. America/New_York"
+              />
+              <datalist id="tz-list-edit">
+                {TIMEZONES.map(tz => <option key={tz} value={tz} />)}
+              </datalist>
             </div>
 
             <div className="modal-field">
@@ -296,13 +410,20 @@ export default function EventModal({ session, reflections, categories = [], onAd
               </div>
             </div>
 
-            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
+            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.9rem' }}>
               <button className="btn-save" onClick={handleSaveEdit} disabled={!title.trim()}>
                 {editSaved ? '✓ Saved' : 'Save Changes'}
               </button>
               <button
                 onClick={() => { onDelete(session.id); onClose(); }}
-                style={{ background: '#ea4335', color: '#fff', border: 'none', borderRadius: '6px', padding: '0.4rem 0.8rem', cursor: 'pointer', fontWeight: 600, fontSize: '0.85rem' }}
+                style={{
+                  background: 'none', color: '#d93025', border: '1.5px solid #f5c6c3',
+                  borderRadius: '8px', padding: '0.4rem 0.8rem',
+                  cursor: 'pointer', fontWeight: 600, fontSize: '0.82rem',
+                  transition: 'background 0.15s, border-color 0.15s',
+                }}
+                onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = '#fce8e6'; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'none'; }}
               >
                 Delete
               </button>
@@ -311,7 +432,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
 
           {/* ── Right: Reflect ── */}
           <div style={{ flex: 1, padding: '1rem 1.25rem', overflowY: 'auto' }}>
-            <div style={{ fontWeight: 600, fontSize: '0.85rem', color: '#555', marginBottom: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            <div style={{ fontWeight: 700, fontSize: '0.7rem', color: '#9aa0a6', marginBottom: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.7px' }}>
               Reflect
             </div>
 

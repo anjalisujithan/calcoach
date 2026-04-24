@@ -152,8 +152,9 @@ class ReflectionIn(BaseModel):
     reflectionText: str
     id: str
     savedAt: str
-    userId: Optional[str] = None   # Firebase UID — links reflection to its owner
+    userId: Optional[str] = None   # email — links reflection to its owner
     category: Optional[str] = None
+    location: Optional[str] = None
     # Optional MCQ fields — used as delayed RL reward signals
     sessionLengthFeedback: Optional[str] = None  # 'too_short' | 'just_right' | 'too_long'
     timingFeedback: Optional[str] = None          # 'too_early' | 'good_timing' | 'too_late'
@@ -294,7 +295,6 @@ async def list_users():
 
 
 class UserRegisterIn(BaseModel):
-    uid: str = ""
     email: str
     display_name: str = ""
 
@@ -304,19 +304,16 @@ _current_user_email: str = ""  # tracks the logged-in user's email for bandit pe
 
 @app.post("/users/register", status_code=201)
 async def register_user(body: UserRegisterIn):
-    """Create a student document on first signup (idempotent — no-op if already exists).
-    Document ID is the Firebase UID when provided, otherwise falls back to email."""
+    """Create a student document on first signup (idempotent — no-op if already exists)."""
     global _current_user_email
     email = body.email.strip().lower() if body.email else ""
-    uid = body.uid.strip() if body.uid else ""
-    doc_id = uid or email
-    if not doc_id:
-        raise HTTPException(400, "uid or email is required")
+    if not email:
+        raise HTTPException(400, "email is required")
 
     _current_user_email = email
 
     db = get_db()
-    doc_ref = db.collection(USERS_COLLECTION).document(doc_id)
+    doc_ref = db.collection(USERS_COLLECTION).document(email)
     existing = await doc_ref.get()
     if existing.exists:
         await _load_bandit_state(email)
@@ -324,7 +321,6 @@ async def register_user(body: UserRegisterIn):
 
     now = datetime.now(timezone.utc).isoformat() + "Z"
     user = {
-        "uid": uid,
         "email": email,
         "display_name": body.display_name,
         "user_summary": None,
@@ -403,6 +399,20 @@ def _build_insights_prompt(reflections: List[dict], sessions: List[dict], user_t
         for d, v in sorted(dow_prods.items(), key=lambda x: -sum(x[1]) / len(x[1]))
     ) or "  (none)"
 
+    # ── Location aggregates ───────────────────────────────────────────────────
+    loc_prods: dict = defaultdict(list)
+    for r in reflections:
+        loc = (r.get("location") or "").strip()
+        if loc:
+            loc_prods[loc].append(float(r.get("productivity", 3)))
+    if loc_prods:
+        loc_lines = "\n".join(
+            f"  - {loc}: avg {sum(v) / len(v):.1f}/5 ({len(v)} sessions)"
+            for loc, v in sorted(loc_prods.items(), key=lambda x: -sum(x[1]) / len(x[1]))
+        )
+    else:
+        loc_lines = "  (no location data)"
+
     # ── MCQ feedback ─────────────────────────────────────────────────────────
     len_c: dict = defaultdict(int)
     tim_c: dict = defaultdict(int)
@@ -453,6 +463,9 @@ PRODUCTIVITY BY HOUR (sorted best → worst):
 PRODUCTIVITY BY DAY OF WEEK (sorted best → worst):
 {dow_lines}
 
+PRODUCTIVITY BY LOCATION (sorted best → worst):
+{loc_lines}
+
 SESSION QUALITY FEEDBACK:
 {mcq_block}
 TOTAL CALENDAR TIME: {cal_line}
@@ -460,20 +473,21 @@ TOTAL CALENDAR TIME: {cal_line}
 RECENT SESSION NOTES FROM THE USER:
 {notes_lines}
 
-Return a JSON object with exactly these two keys:
+Your job is to deeply analyze user data for any patters and trends in their behaviour and provide helpful feedback on their productivity exclusively on scheduling tasks.
 
 "feedback": A string of 4–6 coaching bullet points (each starting with •). Rules:
+- Each bullet point should be an observation that the user might not already know, e.g. "You seem to be spending more time on math than you do on CS61A, but you might wanna start studying for the upcoming midterm." ,"You seem to be working more productively in the mornings this week, consider scheduling high mental effort tasks in the mornings.",  "Your afternoon gym sessions seem to be draining/fueling your productivity on Tuesdays, conisder.."
+- Provide feedback and don't state the obvious and don't repeat yourself and don't use too cringe language, simple nice friendly language.
 - Reference actual subjects, hours, and days from the data
-- Each point is 1–2 sentences: lead with a genuine strength or positive observation, then frame any improvement as an exciting opportunity ("you could unlock even more by…", "imagine how much you'd get done if…", "one small shift that could make a big difference…")
-- Warm, energetic, specific — like a coach who is genuinely impressed and wants to help them go further
 - Your main goal is to mention something that they might not already know about themselves, or something that they might not have thought of before.
-- Genuine useful advice.
+- Provide genuine useful advice in a positive tone. 
 - Focus on 3 main points that really would help them the most.
 - Be scientifically grounded and use data to support your advice.
 - Under 220 words; no title
 
 "user_summary": A 3–4 sentence internal profile written in third person. Cover in order: (1) who they appear to be and what they work on, (2) their main subjects/commitments by time spent, (3) their peak productive hours and best days, (4) any notable patterns such as underestimating session length, timing issues, or break needs. Be concise and factual — this is used by the scheduling system to personalise future suggestions."""
 
+# - Each point is 1–2 sentences: lead with a genuine strength or positive observation, then frame any improvement as an exciting opportunity ("you could unlock even more by…", "imagine how much you'd get done if…", "one small shift that could make a big difference…")
 
 @app.post("/insights")
 async def get_insights(body: InsightsRequest):
@@ -607,7 +621,11 @@ def _truncate(text: str, max_chars: int = 80) -> str:
     return text if len(text) <= max_chars else text[:max_chars] + "…"
 
 
-def _build_system_prompt(sessions: List[dict], reflections: List[dict]) -> str:
+def _build_system_prompt(
+    sessions: List[dict],
+    reflections: List[dict],
+    user_ai_summary: str = "",
+) -> str:
     now = datetime.now(timezone.utc)
     today = now.strftime("%A, %B %d, %Y")
     today_str = now.strftime("%Y-%m-%d")
@@ -637,6 +655,8 @@ def _build_system_prompt(sessions: List[dict], reflections: List[dict]) -> str:
         )
     ref_block = "\n".join(ref_lines) if ref_lines else "  (no reflections yet)"
 
+    summary_block = user_ai_summary.strip() if user_ai_summary else "(none available)"
+
     return f"""You are CalCoach, an AI scheduling assistant. Today is {today}.
 
 CURRENT CALENDAR:
@@ -648,7 +668,16 @@ BUSY BLOCKS (do NOT schedule anything that overlaps with these):
 RECENT REFLECTIONS (productivity ratings and notes from past sessions):
 {ref_block}
 
+USER PROFILE SUMMARY (use this to infer preferences and personalize recommendations):
+{summary_block}
+
 Use the calendar and reflections to give personalized, context-aware scheduling advice.
+When making recommendations, infer likely preferences from the user profile summary
+and combine them with the real schedule availability shown above.
+Do not invent constraints that conflict with known busy/free windows.
+
+If user profile summary and calendar availability conflict, prioritize calendar
+availability as the hard constraint and adapt the recommendation style accordingly.
 
 Always respond with valid JSON in exactly this format:
 {{
@@ -707,6 +736,31 @@ DURATION RULE (hard):
 - Leave both candidate_slots and events_to_create as empty arrays
 
 Do not include any text outside the JSON object."""
+
+
+async def _load_user_ai_summary(user_email: str) -> str:
+    """
+    Load the saved AI user summary from the users collection.
+    Returns an empty string when unavailable.
+    """
+    email = (user_email or "").strip().lower()
+    if not email:
+        return ""
+    try:
+        db = get_db()
+        doc = await db.collection(USERS_COLLECTION).document(email).get()
+        if not doc.exists:
+            return ""
+        data = doc.to_dict() or {}
+        user_summary = data.get("user_summary")
+        if isinstance(user_summary, dict):
+            return str(user_summary.get("ai_summary") or "").strip()
+        if isinstance(user_summary, str):
+            return user_summary.strip()
+        return ""
+    except Exception as e:
+        print(f"[chat] Failed to load ai_summary for {email}: {e}")
+        return ""
 
 
 def _is_scheduling_request(message: str) -> bool:
@@ -1405,6 +1459,7 @@ async def chat(body: ChatMessage):
     attendee_email = _extract_attendee_email(body.message)
     requester_email = (body.requester_email or "").strip().lower()
     is_joint_scheduling = bool(attendee_email) and _is_scheduling_request(body.message)
+    requester_ai_summary = await _load_user_ai_summary(requester_email)
     requester_sessions: List[dict] = list(body.sessions)
     attendee_profile = None
     attendee_sessions: List[dict] = []
@@ -1475,7 +1530,11 @@ async def chat(body: ChatMessage):
     if len(history) > HISTORY_THRESHOLD:
         history = await _compress_history(client, history)
 
-    system_prompt = _build_system_prompt(combined_sessions, body.reflections)
+    system_prompt = _build_system_prompt(
+        combined_sessions,
+        body.reflections,
+        user_ai_summary=requester_ai_summary,
+    )
     if attendee_email and attendee_sessions:
         # Only hint the LLM when we actually have the attendee's calendar data merged in
         system_prompt += f"\n\nNOTE: This is a joint scheduling request with {attendee_email}. Their busy blocks are already included above — all proposed slots must fit within the free windows shown."
