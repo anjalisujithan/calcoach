@@ -103,7 +103,7 @@ class GoogleCalendarService:
             body["recurrence"] = recurrence
         return self.service.events().patch(calendarId="primary", eventId=event_id, body=body).execute()
 
-    def add_event(self, summary: str, start: str, end: str, description: str = "", recurrence: list = []) -> dict:
+    def add_event(self, summary: str, start: str, end: str, description: str = "", recurrence: list = [], attendees: list = []) -> dict:
         event = {
             "summary": summary,
             "description": description,
@@ -116,4 +116,9 @@ class GoogleCalendarService:
         }
         if recurrence:
             event["recurrence"] = recurrence
-        return self.service.events().insert(calendarId="primary", body=event).execute()
+        valid_attendees = [a for a in attendees if a and "@" in a]
+        if valid_attendees:
+            event["attendees"] = [{"email": a} for a in valid_attendees]
+        send_updates = "all" if valid_attendees else "none"
+        print(f"[gcal] inserting event '{summary}' attendees={valid_attendees} sendUpdates={send_updates}")
+        return self.service.events().insert(calendarId="primary", body=event, sendUpdates=send_updates).execute()

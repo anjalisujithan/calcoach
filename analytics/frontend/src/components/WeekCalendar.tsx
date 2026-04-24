@@ -444,7 +444,7 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
                       <div className="session-title">{isPending ? `💡 ${s.title}` : s.title}</div>
                       <div className="session-time">{fmtTime(s.startHour, s.startMin)}</div>
                       {showPendingActions ? (
-                        <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
+                        <div style={{ position: 'absolute', bottom: '3px', left: '4px', right: '4px', display: 'flex', gap: '4px' }}>
                           <button
                             title="Accept suggestion (all blocks)"
                             onClick={e => { e.stopPropagation(); onAcceptSession?.(s.id); }}
