@@ -57,6 +57,9 @@ from typing import List, Optional, Tuple
 import json
 import os
 import re
+import smtplib
+from email.message import EmailMessage
+from urllib.parse import urlencode
 
 try:
     from google.oauth2.credentials import Credentials as _GCreds
@@ -71,8 +74,9 @@ _SCHED_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from groq import AsyncGroq
 from pydantic import BaseModel, Field
 
@@ -95,6 +99,187 @@ app.add_middleware(
 COLLECTION = "reflections"
 USERS_COLLECTION = "users"
 SHARED_AVAILABILITY_COLLECTION = "shared_availability"
+SHARED_INVITES_COLLECTION = "shared_event_invites"
+
+
+def _parse_gcal_datetime(raw: Optional[str]) -> Optional[datetime]:
+    if not raw:
+        return None
+    txt = str(raw).strip()
+    if not txt:
+        return None
+    if txt.endswith("Z"):
+        txt = txt[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(txt)
+    except Exception:
+        return None
+
+
+def _gcal_event_to_session(event: dict) -> Optional[dict]:
+    """Convert a Google Calendar event payload to session shape used by scheduling."""
+    start = (event or {}).get("start", {}) or {}
+    end = (event or {}).get("end", {}) or {}
+
+    start_dt = _parse_gcal_datetime(start.get("dateTime"))
+    end_dt = _parse_gcal_datetime(end.get("dateTime"))
+
+    # Handle all-day events by treating them as full-day busy blocks.
+    if start_dt is None and start.get("date"):
+        try:
+            start_dt = datetime.fromisoformat(f"{start.get('date')}T00:00:00")
+            end_day = end.get("date") or start.get("date")
+            end_dt = datetime.fromisoformat(f"{end_day}T00:00:00")
+        except Exception:
+            return None
+
+    if start_dt is None:
+        return None
+
+    if end_dt is None:
+        end_dt = start_dt + timedelta(minutes=30)
+
+    duration = max(1, int((end_dt - start_dt).total_seconds() // 60))
+    return {
+        "title": str(event.get("summary") or "(Busy)"),
+        "date": start_dt.date().isoformat(),
+        "startHour": int(start_dt.hour),
+        "startMin": int(start_dt.minute),
+        "durationMins": duration,
+    }
+
+
+def _format_event_time_for_email(part: dict) -> str:
+    try:
+        dt = datetime.strptime(str(part["date"]), "%Y-%m-%d")
+        start_h = int(part.get("startHour", 0))
+        start_m = int(part.get("startMin", 0))
+        dur = int(part.get("durationMins", 60))
+        start_label = datetime.strptime(f"{start_h:02d}:{start_m:02d}", "%H:%M").strftime("%I:%M %p").lstrip("0")
+        end_dt = datetime(
+            year=dt.year,
+            month=dt.month,
+            day=dt.day,
+            hour=start_h,
+            minute=start_m,
+        ) + timedelta(minutes=dur)
+        end_label = end_dt.strftime("%I:%M %p").lstrip("0")
+        return f"{dt.strftime('%A, %b %d')} from {start_label} to {end_label}"
+    except Exception:
+        return _format_slot_label(part)
+
+
+def _build_shared_invite_links(invite_id: str) -> dict:
+    api_base = os.getenv("ANALYTICS_API_PUBLIC_BASE", "http://localhost:8001").rstrip("/")
+    frontend_base = os.getenv("CALCOACH_FRONTEND_URL", "http://localhost:3000").rstrip("/")
+
+    def _decision_link(decision: str) -> str:
+        query = urlencode(
+            {
+                "invite_id": invite_id,
+                "decision": decision,
+                "redirect": f"{frontend_base}?invite={invite_id}&decision={decision}",
+            }
+        )
+        return f"{api_base}/shared-invites/respond?{query}"
+
+    return {
+        "accept": _decision_link("accept"),
+        "reject": _decision_link("reject"),
+        "propose": _decision_link("propose"),
+    }
+
+
+def _send_shared_invite_email(
+    *,
+    requester_email: str,
+    attendee_email: str,
+    invite_id: str,
+    title: str,
+    event_time_text: str,
+) -> None:
+    smtp_host = (os.getenv("SMTP_HOST") or "").strip()
+    from_email = (os.getenv("INVITE_FROM_EMAIL") or "").strip()
+    if not smtp_host or not from_email:
+        print("[joint] SMTP_HOST or INVITE_FROM_EMAIL missing; skipping invite email send")
+        return
+
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = (os.getenv("SMTP_USERNAME") or "").strip()
+    smtp_password = os.getenv("SMTP_PASSWORD", "")
+    use_tls = os.getenv("SMTP_USE_TLS", "1").strip() not in ("0", "false", "False")
+
+    links = _build_shared_invite_links(invite_id)
+    subject = f"CalCoach invite: {title or 'Proposed shared event'}"
+    text = (
+        f"{requester_email} proposed a shared event.\n\n"
+        f"Event: {title or 'Shared event'}\n"
+        f"Proposed time: {event_time_text}\n\n"
+        "Respond in CalCoach:\n"
+        f"- Accept: {links['accept']}\n"
+        f"- Reject: {links['reject']}\n"
+        f"- Propose a new time: {links['propose']}\n"
+    )
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = from_email
+    msg["To"] = attendee_email
+    msg.set_content(text)
+
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as smtp:
+            if use_tls:
+                smtp.starttls()
+            if smtp_user and smtp_password:
+                smtp.login(smtp_user, smtp_password)
+            smtp.send_message(msg)
+        print(f"[joint] Sent shared invite email to {attendee_email} (invite_id={invite_id})")
+    except Exception as e:
+        print(f"[joint] Failed to send shared invite email to {attendee_email}: {e}")
+
+
+async def _create_and_send_shared_invite(
+    *,
+    requester_email: str,
+    attendee_email: str,
+    bundle: dict,
+) -> None:
+    requester_email = (requester_email or "").strip().lower()
+    attendee_email = (attendee_email or "").strip().lower()
+    if not requester_email or not attendee_email:
+        return
+
+    parts = bundle.get("parts") or []
+    if not parts:
+        return
+    first_part = parts[0]
+    title = str(first_part.get("title") or bundle.get("title") or "Shared event")
+    event_time_text = _format_event_time_for_email(first_part)
+
+    try:
+        db = get_db()
+        doc_ref = db.collection(SHARED_INVITES_COLLECTION).document()
+        payload = {
+            "requester_email": requester_email,
+            "attendee_email": attendee_email,
+            "status": "pending",
+            "decision_source": "email",
+            "title": title,
+            "time_text": event_time_text,
+            "parts": parts,
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        await doc_ref.set(payload)
+        _send_shared_invite_email(
+            requester_email=requester_email,
+            attendee_email=attendee_email,
+            invite_id=doc_ref.id,
+            title=title,
+            event_time_text=event_time_text,
+        )
+    except Exception as e:
+        print(f"[joint] Failed to create shared invite for {attendee_email}: {e}")
 
 
 # ── Bandit persistence helpers ────────────────────────────────────────────────
@@ -152,8 +337,9 @@ class ReflectionIn(BaseModel):
     reflectionText: str
     id: str
     savedAt: str
-    userId: Optional[str] = None   # Firebase UID — links reflection to its owner
+    userId: Optional[str] = None   # email — links reflection to its owner
     category: Optional[str] = None
+    location: Optional[str] = None
     # Optional MCQ fields — used as delayed RL reward signals
     sessionLengthFeedback: Optional[str] = None  # 'too_short' | 'just_right' | 'too_long'
     timingFeedback: Optional[str] = None          # 'too_early' | 'good_timing' | 'too_late'
@@ -172,6 +358,56 @@ class UserOut(BaseModel):
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
+async def _update_user_summary(user_id: str) -> None:
+    """Regenerate and persist the AI user summary for *user_id* (Firebase UID).
+
+    Fetches the user's reflections, calls Groq for a fresh summary, and merges
+    it into the corresponding Firestore user document.  Failures are logged but
+    never raised so that the calling endpoint always succeeds.
+    """
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        return
+    try:
+        db = get_db()
+        col = db.collection(COLLECTION)
+        reflections = [doc.to_dict() async for doc in col.where("userId", "==", user_id).stream()]
+        if not reflections:
+            return
+
+        prompt = _build_insights_prompt(reflections, [], user_type=None)
+
+        client = AsyncGroq(api_key=api_key)
+        completion = await client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You are CalCoach, a productivity coach. Always respond with valid JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.7,
+            max_tokens=600,
+        )
+        raw = completion.choices[0].message.content or "{}"
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = {}
+
+        user_summary_text = (parsed.get("user_summary") or "").strip()
+        if not user_summary_text:
+            return
+
+        doc_ref = db.collection(USERS_COLLECTION).document(user_id)
+        await doc_ref.set(
+            {"user_summary": {"ai_summary": user_summary_text, "ai_summary_updated_at": datetime.now(timezone.utc).isoformat() + "Z"}},
+            merge=True,
+        )
+        print(f"[summary] Updated user_summary for uid={user_id}")
+    except Exception as e:
+        print(f"[summary] Failed to update user_summary for uid={user_id}: {e}")
+
 
 @app.get("/reflections", response_model=List[ReflectionOut])
 async def list_reflections(session_id: Optional[str] = None, user_id: Optional[str] = None):
@@ -294,7 +530,6 @@ async def list_users():
 
 
 class UserRegisterIn(BaseModel):
-    uid: str = ""
     email: str
     display_name: str = ""
 
@@ -302,21 +537,41 @@ class UserRegisterIn(BaseModel):
 _current_user_email: str = ""  # tracks the logged-in user's email for bandit persistence
 
 
+@app.get("/users/search", response_model=List[UserOut])
+async def search_users(q: str = "", exclude: str = ""):
+    db = get_db()
+    out: List[UserOut] = []
+    q_lower = q.strip().lower()
+    exclude_lower = exclude.strip().lower()
+    async for doc in db.collection(USERS_COLLECTION).stream():
+        data = doc.to_dict() or {}
+        email = (data.get("email") or "").lower()
+        if email == exclude_lower:
+            continue
+        display = (data.get("displayName") or "").lower()
+        if q_lower and q_lower not in email and q_lower not in display:
+            continue
+        out.append(UserOut(
+            id=doc.id,
+            displayName=data.get("displayName", ""),
+            email=data.get("email", ""),
+            createdAt=data.get("createdAt", ""),
+        ))
+    return out
+
+
 @app.post("/users/register", status_code=201)
 async def register_user(body: UserRegisterIn):
-    """Create a student document on first signup (idempotent — no-op if already exists).
-    Document ID is the Firebase UID when provided, otherwise falls back to email."""
+    """Create a student document on first signup (idempotent — no-op if already exists)."""
     global _current_user_email
     email = body.email.strip().lower() if body.email else ""
-    uid = body.uid.strip() if body.uid else ""
-    doc_id = uid or email
-    if not doc_id:
-        raise HTTPException(400, "uid or email is required")
+    if not email:
+        raise HTTPException(400, "email is required")
 
     _current_user_email = email
 
     db = get_db()
-    doc_ref = db.collection(USERS_COLLECTION).document(doc_id)
+    doc_ref = db.collection(USERS_COLLECTION).document(email)
     existing = await doc_ref.get()
     if existing.exists:
         await _load_bandit_state(email)
@@ -324,7 +579,6 @@ async def register_user(body: UserRegisterIn):
 
     now = datetime.now(timezone.utc).isoformat() + "Z"
     user = {
-        "uid": uid,
         "email": email,
         "display_name": body.display_name,
         "user_summary": None,
@@ -403,6 +657,20 @@ def _build_insights_prompt(reflections: List[dict], sessions: List[dict], user_t
         for d, v in sorted(dow_prods.items(), key=lambda x: -sum(x[1]) / len(x[1]))
     ) or "  (none)"
 
+    # ── Location aggregates ───────────────────────────────────────────────────
+    loc_prods: dict = defaultdict(list)
+    for r in reflections:
+        loc = (r.get("location") or "").strip()
+        if loc:
+            loc_prods[loc].append(float(r.get("productivity", 3)))
+    if loc_prods:
+        loc_lines = "\n".join(
+            f"  - {loc}: avg {sum(v) / len(v):.1f}/5 ({len(v)} sessions)"
+            for loc, v in sorted(loc_prods.items(), key=lambda x: -sum(x[1]) / len(x[1]))
+        )
+    else:
+        loc_lines = "  (no location data)"
+
     # ── MCQ feedback ─────────────────────────────────────────────────────────
     len_c: dict = defaultdict(int)
     tim_c: dict = defaultdict(int)
@@ -453,6 +721,9 @@ PRODUCTIVITY BY HOUR (sorted best → worst):
 PRODUCTIVITY BY DAY OF WEEK (sorted best → worst):
 {dow_lines}
 
+PRODUCTIVITY BY LOCATION (sorted best → worst):
+{loc_lines}
+
 SESSION QUALITY FEEDBACK:
 {mcq_block}
 TOTAL CALENDAR TIME: {cal_line}
@@ -460,20 +731,21 @@ TOTAL CALENDAR TIME: {cal_line}
 RECENT SESSION NOTES FROM THE USER:
 {notes_lines}
 
-Return a JSON object with exactly these two keys:
+Your job is to deeply analyze user data for any patters and trends in their behaviour and provide helpful feedback on their productivity exclusively on scheduling tasks.
 
 "feedback": A string of 4–6 coaching bullet points (each starting with •). Rules:
+- Each bullet point should be an observation that the user might not already know, e.g. "You seem to be spending more time on math than you do on CS61A, but you might wanna start studying for the upcoming midterm." ,"You seem to be working more productively in the mornings this week, consider scheduling high mental effort tasks in the mornings.",  "Your afternoon gym sessions seem to be draining/fueling your productivity on Tuesdays, conisder.."
+- Provide feedback and don't state the obvious and don't repeat yourself and don't use too cringe language, simple nice friendly language.
 - Reference actual subjects, hours, and days from the data
-- Each point is 1–2 sentences: lead with a genuine strength or positive observation, then frame any improvement as an exciting opportunity ("you could unlock even more by…", "imagine how much you'd get done if…", "one small shift that could make a big difference…")
-- Warm, energetic, specific — like a coach who is genuinely impressed and wants to help them go further
 - Your main goal is to mention something that they might not already know about themselves, or something that they might not have thought of before.
-- Genuine useful advice.
+- Provide genuine useful advice in a positive tone. 
 - Focus on 3 main points that really would help them the most.
 - Be scientifically grounded and use data to support your advice.
 - Under 220 words; no title
 
 "user_summary": A 3–4 sentence internal profile written in third person. Cover in order: (1) who they appear to be and what they work on, (2) their main subjects/commitments by time spent, (3) their peak productive hours and best days, (4) any notable patterns such as underestimating session length, timing issues, or break needs. Be concise and factual — this is used by the scheduling system to personalise future suggestions."""
 
+# - Each point is 1–2 sentences: lead with a genuine strength or positive observation, then frame any improvement as an exciting opportunity ("you could unlock even more by…", "imagine how much you'd get done if…", "one small shift that could make a big difference…")
 
 @app.post("/insights")
 async def get_insights(body: InsightsRequest):
@@ -543,6 +815,7 @@ class CalendarEvent(BaseModel):
     startHour: int
     startMin: int
     durationMins: int
+    recurrence: List[str] = []
 
 
 class RankedSuggestion(BaseModel):
@@ -573,6 +846,37 @@ class ChatResponse(BaseModel):
     events_to_create: List[CalendarEvent] = []       # backwards compat (non-scheduling replies)
     pending_suggestions: List[RankedSuggestion] = [] # ranked scheduling suggestions
     updated_history: List[HistoryMessage] = []
+
+
+@app.get("/shared-invites/respond")
+async def respond_to_shared_invite(
+    invite_id: str = Query(...),
+    decision: str = Query(..., pattern="^(accept|reject|propose)$"),
+    redirect: Optional[str] = Query(None),
+):
+    invite_id = (invite_id or "").strip()
+    if not invite_id:
+        raise HTTPException(status_code=400, detail="invite_id is required")
+    try:
+        db = get_db()
+        doc_ref = db.collection(SHARED_INVITES_COLLECTION).document(invite_id)
+        doc = await doc_ref.get()
+        if not doc.exists:
+            raise HTTPException(status_code=404, detail="Invite not found")
+        await doc_ref.set(
+            {
+                "status": decision,
+                "responded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            },
+            merge=True,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update invite: {e}")
+
+    destination = (redirect or os.getenv("CALCOACH_FRONTEND_URL", "http://localhost:3000")).strip()
+    return RedirectResponse(destination)
 
 
 HISTORY_THRESHOLD = 8
@@ -607,7 +911,11 @@ def _truncate(text: str, max_chars: int = 80) -> str:
     return text if len(text) <= max_chars else text[:max_chars] + "…"
 
 
-def _build_system_prompt(sessions: List[dict], reflections: List[dict]) -> str:
+def _build_system_prompt(
+    sessions: List[dict],
+    reflections: List[dict],
+    user_ai_summary: str = "",
+) -> str:
     now = datetime.now(timezone.utc)
     today = now.strftime("%A, %B %d, %Y")
     today_str = now.strftime("%Y-%m-%d")
@@ -637,6 +945,8 @@ def _build_system_prompt(sessions: List[dict], reflections: List[dict]) -> str:
         )
     ref_block = "\n".join(ref_lines) if ref_lines else "  (no reflections yet)"
 
+    summary_block = user_ai_summary.strip() if user_ai_summary else "(none available)"
+
     return f"""You are CalCoach, an AI scheduling assistant. Today is {today}.
 
 CURRENT CALENDAR:
@@ -648,7 +958,16 @@ BUSY BLOCKS (do NOT schedule anything that overlaps with these):
 RECENT REFLECTIONS (productivity ratings and notes from past sessions):
 {ref_block}
 
+USER PROFILE SUMMARY (use this to infer preferences and personalize recommendations):
+{summary_block}
+
 Use the calendar and reflections to give personalized, context-aware scheduling advice.
+When making recommendations, infer likely preferences from the user profile summary
+and combine them with the real schedule availability shown above.
+Do not invent constraints that conflict with known busy/free windows.
+
+If user profile summary and calendar availability conflict, prioritize calendar
+availability as the hard constraint and adapt the recommendation style accordingly.
 
 Always respond with valid JSON in exactly this format:
 {{
@@ -666,6 +985,17 @@ When filling "candidate_slots" (new scheduling request only):
 - MULTI-BLOCK one option (e.g. 4 hours as four 1-hour sessions): ONE object with the same title/description/reasoning at the top level, plus a "blocks" array. Each block must have: date, startHour, startMin, durationMins (optional title/description override per block). Do NOT split one option into multiple top-level candidate_slots entries.
 - DURATION RULE (hard): for every option, the sum of all blocks' durationMins MUST equal the total time the user asked to schedule. If the user asks for 2 hours, every option must total exactly 120 minutes. This is non-negotiable — never under- or over-schedule.
 - Leave "events_to_create" as an empty array
+
+=== RECURRING EVENTS ===
+
+When the user asks to add or create a RECURRING event (e.g. "every Tuesday", "weekly gym session", "daily standup"), use "events_to_create" (NOT candidate_slots). Include a "recurrence" field on the event using RRULE format:
+- Weekly on Tuesday: "recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=TU"]
+- Daily: "recurrence": ["RRULE:FREQ=DAILY"]
+- Weekly on Mon, Wed, Fri: "recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR"]
+- If the user says "for N weeks" or "N times", add COUNT: e.g. "RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=8"
+- If the user says "until <date>", add UNTIL: e.g. "RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20261231"
+- If no end is specified, ask the user how long the series should run before creating it.
+BYDAY codes: SU=Sunday, MO=Monday, TU=Tuesday, WE=Wednesday, TH=Thursday, FR=Friday, SA=Saturday
 
 When NOT scheduling (questions, advice, follow-up chat, reactions to previous suggestions, general conversation):
 - Set "reply" to your answer
@@ -709,8 +1039,99 @@ DURATION RULE (hard):
 Do not include any text outside the JSON object."""
 
 
+async def _load_user_ai_summary(user_email: str) -> str:
+    """
+    Load the saved AI user summary from the users collection.
+    Returns an empty string when unavailable.
+    """
+    email = (user_email or "").strip().lower()
+    if not email:
+        return ""
+    try:
+        db = get_db()
+        doc = await db.collection(USERS_COLLECTION).document(email).get()
+        if not doc.exists:
+            return ""
+        data = doc.to_dict() or {}
+        user_summary = data.get("user_summary")
+        if isinstance(user_summary, dict):
+            return str(user_summary.get("ai_summary") or "").strip()
+        if isinstance(user_summary, str):
+            return user_summary.strip()
+        return ""
+    except Exception as e:
+        print(f"[chat] Failed to load ai_summary for {email}: {e}")
+        return ""
+
+
 def _is_scheduling_request(message: str) -> bool:
     return bool(_SCHED_INTENT_RE.search(message or ""))
+
+
+def _fetch_attendee_sessions(tokens: dict) -> List[dict]:
+    """Fetch the attendee's upcoming Google Calendar events using their stored tokens."""
+    if not _GCAL_AVAILABLE:
+        print("[joint] google-api-python-client not installed — skipping attendee calendar fetch")
+        return []
+    try:
+        from datetime import timedelta
+        creds = _GCreds(
+            token=tokens["access_token"],
+            refresh_token=tokens.get("refresh_token"),
+            token_uri=tokens.get("token_uri", "https://oauth2.googleapis.com/token"),
+            client_id=tokens.get("client_id"),
+            client_secret=tokens.get("client_secret"),
+            scopes=tokens.get("scopes", ["https://www.googleapis.com/auth/calendar"]),
+        )
+        service = _gcal_build("calendar", "v3", credentials=creds)
+        now = datetime.now(timezone.utc)
+        result = service.events().list(
+            calendarId="primary",
+            timeMin=(now - timedelta(days=183)).isoformat(),
+            timeMax=(now + timedelta(days=183)).isoformat(),
+            maxResults=1500,
+            singleEvents=True,
+            orderBy="startTime",
+        ).execute()
+        sessions = [_gcal_event_to_session(e) for e in result.get("items", [])]
+        return [s for s in sessions if s is not None]
+    except Exception as e:
+        print(f"[joint] Failed to fetch attendee calendar: {e}")
+        return []
+
+
+async def _load_attendee_profile(email: str):
+    """Load a UserProfile for the attendee from Firestore."""
+    if not _RL_AVAILABLE:
+        return None
+    try:
+        db = get_db()
+        doc = await db.collection(USERS_COLLECTION).document(email).get()
+        if not doc.exists:
+            print(f"[joint] Attendee {email} has no CalCoach account")
+            return None
+        data = doc.to_dict() or {}
+        profile = UserProfile.new_user(
+            user_id=email,
+            name=data.get("displayName", email),
+            preferences=UserPreferences(
+                work_start="09:00",
+                work_end="21:00",
+                avoid_days=[],
+                buffer_minutes=10,
+                max_daily_work_minutes=360,
+            ),
+        )
+        bs_json = data.get("bandit_state_json")
+        if bs_json:
+            from calcoach.user_profile.bandit_state import BanditState
+            bs = json.loads(bs_json)
+            if bs.get("A") and bs.get("b"):
+                profile.bandit_state = BanditState.from_dict(bs)
+        return profile
+    except Exception as e:
+        print(f"[joint] Failed to load attendee profile for {email}: {e}")
+        return None
 
 
 def _extract_attendee_email(message: str) -> Optional[str]:
@@ -1413,6 +1834,7 @@ async def chat(body: ChatMessage):
     attendee_email = _extract_attendee_email(body.message)
     requester_email = (body.requester_email or "").strip().lower()
     is_joint_scheduling = bool(attendee_email) and _is_scheduling_request(body.message)
+    requester_ai_summary = await _load_user_ai_summary(requester_email)
     requester_sessions: List[dict] = list(body.sessions)
     attendee_profile = None
     attendee_sessions: List[dict] = []
@@ -1483,7 +1905,11 @@ async def chat(body: ChatMessage):
     if len(history) > HISTORY_THRESHOLD:
         history = await _compress_history(client, history)
 
-    system_prompt = _build_system_prompt(combined_sessions, body.reflections)
+    system_prompt = _build_system_prompt(
+        combined_sessions,
+        body.reflections,
+        user_ai_summary=requester_ai_summary,
+    )
     if attendee_email and attendee_sessions:
         # Only hint the LLM when we actually have the attendee's calendar data merged in
         system_prompt += f"\n\nNOTE: This is a joint scheduling request with {attendee_email}. Their busy blocks are already included above — all proposed slots must fit within the free windows shown."
@@ -1602,6 +2028,12 @@ async def chat(body: ChatMessage):
                     "Options are shown on your calendar. Use ✓ on the highlighted suggestion to add all its blocks, or ✗ to dismiss."
                 )
                 reply = "\n".join(reply_lines)
+                if attendee_email and requester_email and ranked_bundles:
+                    await _create_and_send_shared_invite(
+                        requester_email=requester_email,
+                        attendee_email=attendee_email,
+                        bundle=ranked_bundles[0],
+                    )
         else:
             # No scheduling — use events_to_create directly (backwards compat)
             events = [CalendarEvent(**e) for e in events_raw if isinstance(e, dict)]
@@ -1687,73 +2119,121 @@ class OnboardingIn(BaseModel):
     workStyle: str = ""
     planningHorizon: str = ""
     chunkSize: str = ""
+    email: Optional[str] = None  # identifies which user doc to persist to
 
 
 @app.post("/onboarding")
 async def onboarding(body: OnboardingIn):
     """
-    Apply survey answers to the user profile so the bandit starts with
-    meaningful priors instead of a cold start.
+    Persist survey answers for the user and apply them to the in-memory
+    RL profile so the bandit starts with meaningful priors instead of a
+    cold start. The email can come from the request body (preferred) or
+    fall back to the most recently registered user.
     """
     global _user_profile
-    if not _RL_AVAILABLE or _user_profile is None:
-        return {"ok": True, "rl_active": False}
 
+    # Resolve which user doc to write to. Prefer the explicit email from
+    # the client so saves don't silently no-op after a backend restart.
+    email = (body.email or "").strip().lower()
+    if not email:
+        email = (_current_user_email or "").strip().lower()
+
+    # Build the survey dict we'll persist (excluding the transport-only email field).
+    survey_dict = body.dict(exclude={"email"})
+
+    saved_to_firestore = False
+    save_error: Optional[str] = None
+    if email:
+        try:
+            db = get_db()
+            doc_ref = db.collection(USERS_COLLECTION).document(email)
+            await doc_ref.set({"survey_answers": survey_dict}, merge=True)
+            saved_to_firestore = True
+            print(f"[Onboarding] Saved survey_answers for {email}")
+        except Exception as save_err:
+            save_error = str(save_err)
+            print(f"[Onboarding] Failed to save survey_answers for {email}: {save_err}")
+    else:
+        save_error = "no user email available — cannot persist preferences"
+        print(f"[Onboarding] {save_error}")
+
+    # Apply to in-memory RL profile if RL is available.
+    rl_active = False
+    if _RL_AVAILABLE and _user_profile is not None:
+        try:
+            work_start = f"{body.workStartHour:02d}:00"
+            work_end = f"{body.workEndHour:02d}:00"
+            avoid_days: List[str] = []
+            if "weekdays" in body.workDays and "weekends" not in body.workDays:
+                avoid_days = ["Saturday", "Sunday"]
+            elif "weekends" in body.workDays and "weekdays" not in body.workDays:
+                avoid_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+
+            chunk_map = {
+                "15_30": (15, 30),
+                "30_60": (30, 60),
+                "60_90": (60, 90),
+                "90_plus": (90, 180),
+            }
+            pref_chunk, max_chunk = chunk_map.get(body.chunkSize, (45, 90))
+
+            _user_profile.preferences.work_start = work_start
+            _user_profile.preferences.work_end = work_end
+            _user_profile.preferences.avoid_days = avoid_days
+            _user_profile.preferences.preferred_chunk_minutes = pref_chunk
+            _user_profile.preferences.max_daily_work_minutes = (body.workEndHour - body.workStartHour) * 60
+
+            from datetime import time as _time_cls
+            if body.workStartHour <= 10:
+                for h in [9, 10]:
+                    fake_block = Block(day="Monday", start=_time_cls(h, 0), end=_time_cls(h + 1, 0), duration_minutes=60)
+                    fake_cand = CandidateSchedule(blocks=[fake_block], total_minutes=60, strategy=f"morning_{h}")
+                    fake_task = TaskRequest(task_name="seed", total_duration_minutes=60, task_type="other",
+                                            deadline_day="Sunday", preferred_chunk_minutes=pref_chunk,
+                                            min_chunk_minutes=15, max_chunk_minutes=max_chunk)
+                    ctx = _extract(fake_cand, _user_profile, fake_task, {})
+                    _bandit.update(ctx, 0.4, _user_profile)
+            elif body.workStartHour >= 14:
+                for h in [14, 16]:
+                    fake_block = Block(day="Monday", start=_time_cls(h, 0), end=_time_cls(h + 1, 0), duration_minutes=60)
+                    fake_cand = CandidateSchedule(blocks=[fake_block], total_minutes=60, strategy=f"afternoon_{h}")
+                    fake_task = TaskRequest(task_name="seed", total_duration_minutes=60, task_type="other",
+                                            deadline_day="Sunday", preferred_chunk_minutes=pref_chunk,
+                                            min_chunk_minutes=15, max_chunk_minutes=max_chunk)
+                    ctx = _extract(fake_cand, _user_profile, fake_task, {})
+                    _bandit.update(ctx, 0.4, _user_profile)
+
+            print(f"[Onboarding] Applied survey: work={work_start}-{work_end}, avoid={avoid_days}, chunk={pref_chunk}min")
+            if email:
+                await _save_bandit_state(email)
+            rl_active = True
+        except Exception as rl_err:
+            print(f"[Onboarding] RL application failed (non-fatal): {rl_err}")
+
+    return {
+        "ok": saved_to_firestore,
+        "rl_active": rl_active,
+        "saved": saved_to_firestore,
+        "message": save_error,
+    }
+
+
+@app.get("/preferences")
+async def get_preferences(email: str):
+    """Return saved survey answers for a user so the preferences tab can pre-populate."""
+    if not email:
+        raise HTTPException(400, "email is required")
     try:
-        # Map survey work hours to user preferences
-        work_start = f"{body.workStartHour:02d}:00"
-        work_end = f"{body.workEndHour:02d}:00"
-        avoid_days: List[str] = []
-        if "weekdays" in body.workDays and "weekends" not in body.workDays:
-            avoid_days = ["Saturday", "Sunday"]
-        elif "weekends" in body.workDays and "weekdays" not in body.workDays:
-            avoid_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-
-        # Map chunk size to preferred duration
-        chunk_map = {
-            "15_30": (15, 30),
-            "30_60": (30, 60),
-            "60_90": (60, 90),
-            "90_plus": (90, 180),
-        }
-        pref_chunk, max_chunk = chunk_map.get(body.chunkSize, (45, 90))
-
-        # Rebuild user preferences from survey answers
-        _user_profile.preferences.work_start = work_start
-        _user_profile.preferences.work_end = work_end
-        _user_profile.preferences.avoid_days = avoid_days
-        _user_profile.preferences.preferred_chunk_minutes = pref_chunk
-        _user_profile.preferences.max_daily_work_minutes = (body.workEndHour - body.workStartHour) * 60
-
-        # Seed bandit with a few synthetic updates to nudge priors
-        # Morning preference: if user chose early start, reward morning slots
-        from datetime import time as _time_cls
-        if body.workStartHour <= 10:
-            for h in [9, 10]:
-                fake_block = Block(day="Monday", start=_time_cls(h, 0), end=_time_cls(h + 1, 0), duration_minutes=60)
-                fake_cand = CandidateSchedule(blocks=[fake_block], total_minutes=60, strategy=f"morning_{h}")
-                fake_task = TaskRequest(task_name="seed", total_duration_minutes=60, task_type="other",
-                                        deadline_day="Sunday", preferred_chunk_minutes=pref_chunk,
-                                        min_chunk_minutes=15, max_chunk_minutes=max_chunk)
-                ctx = _extract(fake_cand, _user_profile, fake_task, {})
-                _bandit.update(ctx, 0.4, _user_profile)   # mild positive
-        elif body.workStartHour >= 14:
-            for h in [14, 16]:
-                fake_block = Block(day="Monday", start=_time_cls(h, 0), end=_time_cls(h + 1, 0), duration_minutes=60)
-                fake_cand = CandidateSchedule(blocks=[fake_block], total_minutes=60, strategy=f"afternoon_{h}")
-                fake_task = TaskRequest(task_name="seed", total_duration_minutes=60, task_type="other",
-                                        deadline_day="Sunday", preferred_chunk_minutes=pref_chunk,
-                                        min_chunk_minutes=15, max_chunk_minutes=max_chunk)
-                ctx = _extract(fake_cand, _user_profile, fake_task, {})
-                _bandit.update(ctx, 0.4, _user_profile)
-
-        print(f"[Onboarding] Applied survey: work={work_start}-{work_end}, avoid={avoid_days}, chunk={pref_chunk}min")
-        if _current_user_email:
-            await _save_bandit_state(_current_user_email)
-        return {"ok": True, "rl_active": True}
+        db = get_db()
+        doc_ref = db.collection(USERS_COLLECTION).document(email.strip().lower())
+        doc = await doc_ref.get()
+        if doc.exists:
+            data = doc.to_dict() or {}
+            return {"ok": True, "survey_answers": data.get("survey_answers")}
+        return {"ok": True, "survey_answers": None}
     except Exception as e:
-        print(f"[Onboarding] Error: {e}")
-        return {"ok": False, "message": str(e)}
+        print(f"[Preferences] Error fetching preferences for {email}: {e}")
+        return {"ok": False, "survey_answers": None}
 
 
 # ── RL status endpoint (for testing/debugging) ────────────────────────────────

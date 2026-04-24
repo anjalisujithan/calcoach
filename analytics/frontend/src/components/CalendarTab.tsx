@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import WeekCalendar, { Session } from './WeekCalendar';
+import WeekCalendar, { Session, detectLocationType, getDefaultTimezone } from './WeekCalendar';
 import ChatBar, { Message } from './ChatBar';
 import EventModal from './EventModal';
 import { ReflectionEntry } from './ReflectionPanel';
@@ -41,17 +41,26 @@ function googleEventToSession(event: any): Session | null {
   const start = new Date(startStr);
   const end = new Date(endStr);
   const durationMins = Math.round((end.getTime() - start.getTime()) / 60000);
+  const loc = event.location ?? '';
+  const storedType = event.extendedProperties?.private?.locationType;
   return {
     id: event.id,
     title: event.summary ?? '(No title)',
     description: event.description ?? '',
+    location: loc,
+    locationType: storedType ?? (loc ? detectLocationType(loc) : undefined),
+    timezone: event.start?.timeZone ?? getDefaultTimezone(),
+    calendarId: event._calendarId ?? 'primary',
+    visibility: event.visibility ?? 'default',
     date: startStr.slice(0, 10),
     dayIndex: start.getDay(),
     startHour: start.getHours(),
     startMin: start.getMinutes(),
     durationMins,
-    color: GCAL_COLORS[event.colorId] ?? '#4285f4',
+    color: event.extendedProperties?.private?.calcoachColor ?? GCAL_COLORS[event.colorId] ?? '#4285f4',
     recurrence: event.recurrence,
+    recurringEventId: event.recurringEventId,
+    attendees: event.attendees ?? [],
   };
 }
 
@@ -59,11 +68,17 @@ function sessionToPayload(s: Omit<Session, 'id'>) {
   return {
     title: s.title,
     description: s.description,
+    location: s.location ?? '',
+    locationType: s.locationType ?? 'room',
+    timezone: s.timezone ?? getDefaultTimezone(),
+    calendarId: s.calendarId ?? 'primary',
+    visibility: s.visibility ?? 'default',
     date: s.date,
     startHour: s.startHour,
     startMin: s.startMin,
     durationMins: s.durationMins,
     recurrence: s.recurrence ?? [],
+    color: s.color ?? '#4285f4',
   };
 }
 
@@ -94,6 +109,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   const [refreshing, setRefreshing] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [categories, setCategories] = useState<string[]>(loadCategories);
+  const [newEventDraft, setNewEventDraft] = useState<{ date: string; startHour: number; startMin: number; durationMins: number } | null>(null);
 
   function handleAddCategory(cat: string) {
     setCategories(prev => {
@@ -177,6 +193,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
 
   async function handleEditSession(id: string, s: Omit<Session, 'id'>) {
     setSessions(prev => prev.map(existing => existing.id === id ? { ...s, id } : existing));
+    if (!authenticated) return;
     try {
       await fetch(`${CALENDAR_API}/calendar/events/${id}`, {
         method: 'PATCH',
@@ -184,10 +201,20 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(sessionToPayload(s)),
       });
+      // Resync to pick up all expanded recurring instances (or remove them when recurrence cleared)
+      const prevRecurrence = sessions.find(e => e.id === id)?.recurrence ?? [];
+      const newRecurrence = s.recurrence ?? [];
+      if (prevRecurrence.length > 0 || newRecurrence.length > 0) fetchEvents();
     } catch { /* optimistic */ }
   }
 
   async function handleAddSession(s: Omit<Session, 'id'>) {
+    if (!authenticated) {
+      const id = mkId();
+      localIds.current.add(id);
+      setSessions(prev => [...prev, { ...s, id }]);
+      return;
+    }
     try {
       const res = await fetch(`${CALENDAR_API}/calendar/events`, {
         method: 'POST',
@@ -198,6 +225,8 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
       const data = await res.json();
       const id = data.event?.id ?? mkId();
       setSessions(prev => [...prev, { ...s, id }]);
+      // Resync to load all expanded recurring instances from GCal
+      if ((s.recurrence ?? []).length > 0) fetchEvents();
     } catch {
       const id = mkId();
       localIds.current.add(id);
@@ -206,14 +235,37 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   }
 
   async function handleDeleteSession(id: string) {
+    if (authenticated) {
+      try {
+        const calId = sessions.find(s => s.id === id)?.calendarId ?? 'primary';
+        await fetch(`${CALENDAR_API}/calendar/events/${id}?calendarId=${encodeURIComponent(calId)}`, {
+          method: 'DELETE',
+          credentials: 'include',
+        });
+      } catch { /* optimistic */ }
+    }
+    setSessions(prev => prev.filter(s => s.id !== id));
+    setSelectedSessionId(null);
+  }
+
+  async function handleDeleteSeriesSession(recurringEventId: string) {
     try {
-      await fetch(`${CALENDAR_API}/calendar/events/${id}`, {
+      await fetch(`${CALENDAR_API}/calendar/events/${recurringEventId}`, {
         method: 'DELETE',
         credentials: 'include',
       });
     } catch { /* optimistic */ }
-    setSessions(prev => prev.filter(s => s.id !== id));
+    setSessions(prev => prev.filter(s => s.recurringEventId !== recurringEventId && s.id !== recurringEventId));
     setSelectedSessionId(null);
+  }
+
+  function handleOpenCreate(date: string, startHour: number, startMin: number, durationMins: number) {
+    setNewEventDraft({ date, startHour, startMin, durationMins });
+  }
+
+  async function handleSaveNew(_id: string, s: Omit<Session, 'id'>) {
+    await handleAddSession(s);
+    setNewEventDraft(null);
   }
 
   function clearPendingSuggestions() {
@@ -248,8 +300,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   async function handleSend(text: string) {
     if (chatLoading) return;
     const userMsg: Message = { id: mkId(), role: 'user', text };
-    const thinkingMsg: Message = { id: mkId(), role: 'assistant', text: '…' };
-    setMessages(m => [...m, userMsg, thinkingMsg]);
+    setMessages(m => [...m, userMsg]);
 
     const controller = new AbortController();
     inFlightController.current = controller;
@@ -279,7 +330,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
       clearInFlightRequest();
       const data = await res.json();
       const reply = data.reply ?? 'Sorry, something went wrong.';
-      setMessages(m => m.map(msg => msg.id === thinkingMsg.id ? { ...msg, text: reply } : msg));
+      setMessages(m => [...m, { id: mkId(), role: 'assistant', text: reply }]);
       if (data.updated_history) setChatHistory(data.updated_history);
 
       // Handle ranked suggestions as pending (grayed-out) calendar events
@@ -322,7 +373,10 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
       // Backwards-compat: direct events_to_create (non-scheduling replies)
       const newEvents = data.events_to_create ?? [];
       if (newEvents.length > 0) {
+        let hasRecurring = false;
         for (const event of newEvents) {
+          const recurrence: string[] = event.recurrence ?? [];
+          if (recurrence.length > 0) hasRecurring = true;
           await handleAddSession({
             title: event.title,
             description: event.description ?? '',
@@ -332,8 +386,11 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
             startMin: event.startMin,
             durationMins: event.durationMins,
             color: '#4285f4',
+            recurrence,
           });
         }
+        // Resync to load all expanded instances from GCal
+        if (hasRecurring) fetchEvents();
       }
     } catch (err: any) {
       const reason = abortReason.current;
@@ -341,9 +398,9 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
       const msg = err?.name === 'AbortError'
         ? reason === 'user'
           ? 'Stopped.'
-          : 'Request timed out (>30s). The scheduling engine may be overloaded — try again.'
+          : 'Request timed out (>60s). The scheduling engine may be overloaded — try again.'
         : 'Error reaching CalCoach backend.';
-      setMessages(m => m.map(msg2 => msg2.id === thinkingMsg.id ? { ...msg2, text: msg } : msg2));
+      setMessages(m => [...m, { id: mkId(), role: 'assistant', text: msg }]);
     }
   }
 
@@ -365,49 +422,51 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
     const newRows: Session[] = [];
     if (info?.events?.length) {
       for (const e of info.events) {
-        try {
-          const res = await fetch(`${CALENDAR_API}/calendar/events`, {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+        if (authenticated) {
+          try {
+            const res = await fetch(`${CALENDAR_API}/calendar/events`, {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                title: stripRank(e.title ?? ''),
+                description: e.description ?? '',
+                date: e.date,
+                startHour: e.startHour,
+                startMin: e.startMin,
+                durationMins: e.durationMins,
+                recurrence: [],
+              }),
+            });
+            const d = await res.json();
+            const gcalId = d.event?.id ?? mkId();
+            newRows.push({
+              id: gcalId,
               title: stripRank(e.title ?? ''),
               description: e.description ?? '',
               date: e.date,
+              dayIndex: new Date(e.date + 'T00:00:00').getDay(),
               startHour: e.startHour,
               startMin: e.startMin,
               durationMins: e.durationMins,
-              recurrence: [],
-            }),
-          });
-          const d = await res.json();
-          const gcalId = d.event?.id ?? mkId();
-          newRows.push({
-            id: gcalId,
-            title: stripRank(e.title ?? ''),
-            description: e.description ?? '',
-            date: e.date,
-            dayIndex: new Date(e.date + 'T00:00:00').getDay(),
-            startHour: e.startHour,
-            startMin: e.startMin,
-            durationMins: e.durationMins,
-            color: '#4285f4',
-          });
-        } catch {
-          const tid = mkId();
-          localIds.current.add(tid);
-          newRows.push({
-            id: tid,
-            title: stripRank(e.title ?? ''),
-            description: e.description ?? '',
-            date: e.date,
-            dayIndex: new Date(e.date + 'T00:00:00').getDay(),
-            startHour: e.startHour,
-            startMin: e.startMin,
-            durationMins: e.durationMins,
-            color: '#4285f4',
-          });
+              color: '#4285f4',
+            });
+            continue;
+          } catch { /* fall through to local */ }
         }
+        const tid = mkId();
+        localIds.current.add(tid);
+        newRows.push({
+          id: tid,
+          title: stripRank(e.title ?? ''),
+          description: e.description ?? '',
+          date: e.date,
+          dayIndex: new Date(e.date + 'T00:00:00').getDay(),
+          startHour: e.startHour,
+          startMin: e.startMin,
+          durationMins: e.durationMins,
+          color: '#4285f4',
+        });
       }
     }
 
@@ -418,6 +477,11 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
 
     pendingSlotMap.current.clear();
     pendingSessionToGroup.current.clear();
+
+    // If any accepted event has recurrence, resync to load all expanded instances
+    if (info.events.some((e: any) => (e.recurrence ?? []).length > 0)) {
+      fetchEvents();
+    }
   }
 
   async function handleRejectSession(id: string) {
@@ -445,59 +509,35 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
     }));
   }
 
-  if (authenticated === null) {
-    return (
-      <div className="tab-layout">
-        <div className="calendar-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <p style={{ color: '#888' }}>Checking Google Calendar connection…</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!authenticated) {
-    return (
-      <div className="tab-layout">
-        <div className="calendar-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ textAlign: 'center' }}>
-            <p style={{ marginBottom: '1rem', color: '#666' }}>Connect your Google Calendar to get started.</p>
-            <a href={`${CALENDAR_API}/auth/login?email=${encodeURIComponent(userEmail)}`} className="btn-save" style={{ textDecoration: 'none', padding: '0.6rem 1.4rem' }}>
-              Connect Google Calendar
-            </a>
-          </div>
-        </div>
-        {chatOpen && (
-          <ChatBar
-            headerLabel="Feedback for generated schedule"
-            placeholder="Schedule Anything"
-            messages={messages}
-            onSend={handleSend}
-            mentionSearchEndpoint={`${ANALYTICS_API}/users/search`}
-            currentUserEmail={userEmail}
-            isLoading={chatLoading}
-            onStop={handleStopChat}
-            onReset={handleRestartChat}
-            onClose={() => setChatOpen(false)}
-          />
-        )}
-      </div>
-    );
-  }
-
   const resyncBtn = (
     <>
-      <button
-        onClick={fetchEvents}
-        disabled={refreshing}
-        style={{
-          background: refreshing ? '#ccc' : '#4285f4',
-          color: '#fff', border: 'none', borderRadius: '6px',
-          padding: '0.4rem 1rem', fontWeight: 600,
-          cursor: refreshing ? 'not-allowed' : 'pointer', fontSize: '0.85rem',
-        }}
-      >
-        {refreshing ? '↻ Syncing…' : '↻ Resync with GCal'}
-      </button>
+      {authenticated === true && (
+        <button
+          onClick={fetchEvents}
+          disabled={refreshing}
+          style={{
+            background: refreshing ? '#ccc' : '#4285f4',
+            color: '#fff', border: 'none', borderRadius: '6px',
+            padding: '0.4rem 1rem', fontWeight: 600,
+            cursor: refreshing ? 'not-allowed' : 'pointer', fontSize: '0.85rem',
+          }}
+        >
+          {refreshing ? '↻ Syncing…' : '↻ Resync with GCal'}
+        </button>
+      )}
+      {authenticated === false && (
+        <a
+          href={`${CALENDAR_API}/auth/login?email=${encodeURIComponent(userEmail)}`}
+          style={{
+            background: '#fff', color: '#3c4043',
+            border: '1px solid #dadce0', borderRadius: '6px',
+            padding: '0.4rem 0.75rem', fontWeight: 600,
+            fontSize: '0.85rem', textDecoration: 'none', display: 'inline-block',
+          }}
+        >
+          Connect Google Calendar
+        </a>
+      )}
       {!chatOpen && (
         <button
           onClick={() => setChatOpen(true)}
@@ -521,20 +561,23 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
 
   return (
     <div className="tab-layout">
-      <WeekCalendar
-        sessions={sessions}
-        selectedSession={selectedSessionId}
-        onSelectSession={setSelectedSessionId}
-        onAddSession={handleAddSession}
-        onEditSession={handleEditSession}
-        onDeleteSession={handleDeleteSession}
-        onAcceptSession={handleAcceptSession}
-        onRejectSession={handleRejectSession}
-        categories={categories}
-        onAddCategory={handleAddCategory}
-        onDeleteCategory={handleDeleteCategory}
-        toolbarExtra={resyncBtn}
-      />
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+        <WeekCalendar
+          sessions={sessions}
+          selectedSession={selectedSessionId}
+          onSelectSession={setSelectedSessionId}
+          onAddSession={handleAddSession}
+          onEditSession={handleEditSession}
+          onDeleteSession={handleDeleteSession}
+          onAcceptSession={handleAcceptSession}
+          onRejectSession={handleRejectSession}
+          onOpenCreate={handleOpenCreate}
+          categories={categories}
+          onAddCategory={handleAddCategory}
+          onDeleteCategory={handleDeleteCategory}
+          toolbarExtra={resyncBtn}
+        />
+      </div>
       {chatOpen && (
         <ChatBar
           headerLabel="Feedback for generated schedule"
@@ -559,6 +602,30 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           onClose={() => setSelectedSessionId(null)}
           onSave={handleEditSession}
           onDelete={handleDeleteSession}
+          onDeleteSeries={handleDeleteSeriesSession}
+          onSaveReflection={onSaveReflection}
+        />
+      )}
+      {newEventDraft && (
+        <EventModal
+          session={{
+            id: '__new__',
+            title: '',
+            description: '',
+            date: newEventDraft.date,
+            dayIndex: new Date(newEventDraft.date + 'T12:00:00').getDay(),
+            startHour: newEventDraft.startHour,
+            startMin: newEventDraft.startMin,
+            durationMins: newEventDraft.durationMins,
+            color: '#4285f4',
+          }}
+          reflections={reflections}
+          categories={categories}
+          onAddCategory={handleAddCategory}
+          onDeleteCategory={handleDeleteCategory}
+          onClose={() => setNewEventDraft(null)}
+          onSave={handleSaveNew}
+          onDelete={() => setNewEventDraft(null)}
           onSaveReflection={onSaveReflection}
         />
       )}

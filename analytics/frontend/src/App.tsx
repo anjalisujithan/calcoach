@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import CalendarTab from './components/CalendarTab';
 import AnalyticsTab from './components/AnalyticsTab';
+import PreferencesTab from './components/PreferencesTab';
 import AuthPage from './components/AuthPage';
 import OnboardingSurvey, { SurveyAnswers } from './components/OnboardingSurvey';
 import { ReflectionEntry } from './components/ReflectionPanel';
@@ -8,7 +9,7 @@ import { Session } from './components/WeekCalendar';
 import { AuthProvider, useAuth } from './AuthContext';
 import './App.css';
 
-type Tab = 'calendar' | 'analytics';
+type Tab = 'calendar' | 'analytics' | 'preferences';
 
 let idCounter = 0;
 const mkId = () => String(++idCounter);
@@ -26,13 +27,13 @@ function AppShell() {
 
   useEffect(() => {
     if (!user) return;
-    fetch(`${API}/reflections?user_id=${encodeURIComponent(user.uid)}`)
+    fetch(`${API}/reflections?user_id=${encodeURIComponent(user.email ?? '')}`)
       .then(r => r.json())
       .then((data: ReflectionEntry[]) => {
         setReflections(data);
       })
       .catch(() => {});
-  }, [user?.uid]);
+  }, [user?.email]);
 
   function handleSurveyComplete(_answers: SurveyAnswers) {
     setShowSurvey(false);
@@ -49,7 +50,7 @@ function AppShell() {
   async function handleSaveReflection(entry: Omit<ReflectionEntry, 'id' | 'savedAt'>) {
     const newEntry: ReflectionEntry = {
       ...entry,
-      userId: user!.uid,
+      userId: user!.email ?? '',
       id: mkId(),
       savedAt: new Date().toISOString(),
     };
@@ -73,7 +74,7 @@ function AppShell() {
           <h1 className="app-title">CalCoach 🐻 📅</h1>
         </div>
         <nav className="tab-nav">
-          {(['calendar', 'analytics'] as Tab[]).map(tab => (
+          {(['calendar', 'analytics', 'preferences'] as Tab[]).map(tab => (
             <button
               key={tab}
               className={`tab-btn ${activeTab === tab ? 'active' : ''}`}
@@ -89,8 +90,15 @@ function AppShell() {
         </div>
       </header>
       <main className="app-main">
-        {activeTab === 'calendar' && <CalendarTab reflections={reflections} onSaveReflection={handleSaveReflection} onSessionsChange={setSessions} userEmail={user.email ?? ''} />}
-        {activeTab === 'analytics' && <AnalyticsTab reflections={reflections} sessions={sessions} userId={user.uid} userEmail={user.email ?? ''} />}
+        <div style={{ display: activeTab === 'calendar' ? undefined : 'none', height: '100%' }}>
+          <CalendarTab reflections={reflections} onSaveReflection={handleSaveReflection} onSessionsChange={setSessions} userEmail={user.email ?? ''} />
+        </div>
+        <div style={{ display: activeTab === 'analytics' ? undefined : 'none', height: '100%' }}>
+          <AnalyticsTab reflections={reflections} sessions={sessions} userEmail={user.email ?? ''} />
+        </div>
+        <div style={{ display: activeTab === 'preferences' ? undefined : 'none', height: '100%' }}>
+          <PreferencesTab userEmail={user.email ?? ''} />
+        </div>
       </main>
     </div>
   );

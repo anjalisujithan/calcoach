@@ -1,10 +1,43 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { format, startOfWeek, addDays, isSameDay, addWeeks, subWeeks } from 'date-fns';
 
+export type LocationType = 'room' | 'meeting_link' | 'address';
+
+export interface CalendarMeta {
+  id: string;
+  summary: string;
+  backgroundColor?: string;
+  accessRole?: string;
+  primary?: boolean;
+}
+
+export function getDefaultTimezone(): string {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return 'America/Los_Angeles'; }
+}
+
+export const TIMEZONES: string[] = (() => {
+  try { return (Intl as any).supportedValuesOf('timeZone') as string[]; } catch {
+    return [
+      'America/New_York','America/Chicago','America/Denver','America/Los_Angeles',
+      'America/Phoenix','America/Anchorage','Pacific/Honolulu','America/Toronto',
+      'America/Vancouver','Europe/London','Europe/Paris','Europe/Berlin','Europe/Rome',
+      'Europe/Madrid','Europe/Amsterdam','Europe/Zurich','Europe/Stockholm',
+      'Asia/Tokyo','Asia/Shanghai','Asia/Hong_Kong','Asia/Singapore','Asia/Seoul',
+      'Asia/Kolkata','Asia/Dubai','Asia/Bangkok','Asia/Jakarta','Australia/Sydney',
+      'Australia/Melbourne','Pacific/Auckland','Pacific/Auckland',
+    ];
+  }
+})();
+
 export interface Session {
   id: string;
   title: string;
   description: string;
+  location?: string;
+  locationType?: LocationType;
+  timezone?: string;
+  calendarId?: string;
+  visibility?: string;
   date: string;           // 'yyyy-MM-dd'
   dayIndex: number;       // 0=Sun … 6=Sat
   startHour: number;
@@ -12,12 +45,81 @@ export interface Session {
   durationMins: number;
   color: string;
   recurrence?: string[];  // RRULE strings e.g. ["RRULE:FREQ=WEEKLY;BYDAY=MO"]
+  recurringEventId?: string; // GCal series ID — present on instances of a recurring event
   category?: string;
+  attendees?: { email: string; displayName?: string; self?: boolean; responseStatus?: string }[];
   pending?: boolean;      // true = AI suggestion awaiting user accept/reject
   /** All blocks in one ranked option share this id; used with pendingSlotMap on the parent */
   pendingGroupId?: string;
   /** If false, this block is part of a multi-slot suggestion — actions live on the first block only */
   pendingShowActions?: boolean;
+}
+
+export function detectLocationType(location: string): LocationType {
+  if (!location) return 'room';
+  if (/^https?:\/\//i.test(location)) return 'meeting_link';
+  return 'room';
+}
+
+export function AddressSearch({ value, onChange, wrapperStyle }: { value: string; onChange: (v: string) => void; wrapperStyle?: React.CSSProperties }) {
+  const [query, setQuery] = useState(value);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [open, setOpen] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(() => {
+    if (query.length < 3) { setSuggestions([]); setOpen(false); return; }
+    clearTimeout(timer.current);
+    timer.current = setTimeout(async () => {
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5`,
+          { headers: { 'Accept-Language': 'en' } }
+        );
+        const data = await res.json();
+        const names: string[] = data.map((d: any) => d.display_name);
+        setSuggestions(names);
+        setOpen(names.length > 0);
+      } catch { /* ignore */ }
+    }, 600);
+    return () => clearTimeout(timer.current);
+  }, [query]);
+
+  return (
+    <div style={{ position: 'relative', ...wrapperStyle }}>
+      <input
+        value={query}
+        onChange={e => { setQuery(e.target.value); onChange(e.target.value); }}
+        placeholder="Search for an address…"
+        onFocus={() => suggestions.length > 0 && setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        style={{ width: '100%', boxSizing: 'border-box' }}
+      />
+      {open && suggestions.length > 0 && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff',
+          border: '1px solid #e0e0e0', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+          zIndex: 200, maxHeight: '180px', overflowY: 'auto',
+        }}>
+          {suggestions.map((s, i) => (
+            <div
+              key={i}
+              onMouseDown={() => { onChange(s); setQuery(s); setOpen(false); setSuggestions([]); }}
+              style={{
+                padding: '0.4rem 0.6rem', fontSize: '0.78rem', cursor: 'pointer',
+                borderBottom: i < suggestions.length - 1 ? '1px solid #f0f0f0' : 'none',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.background = '#f8f9fa')}
+              onMouseLeave={e => (e.currentTarget.style.background = '')}
+            >{s}</div>
+          ))}
+          <div style={{ padding: '0.15rem 0.6rem', fontSize: '0.62rem', color: '#bbb', textAlign: 'right' }}>
+            © OpenStreetMap contributors
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 interface Props {
@@ -29,9 +131,11 @@ interface Props {
   onDeleteSession?: (id: string) => void;
   onAcceptSession?: (id: string) => void;
   onRejectSession?: (id: string) => void;
+  onOpenCreate?: (date: string, startHour: number, startMin: number, durationMins: number) => void;
   categories?: string[];
   onAddCategory?: (cat: string) => void;
   onDeleteCategory?: (cat: string) => void;
+  calendars?: CalendarMeta[];
   toolbarExtra?: React.ReactNode;
 }
 
@@ -45,23 +149,46 @@ const COLOR_PALETTE = [
 
 const RRULE_DAY = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
 
-function buildRRule(repeat: string, customDays: number[], dayIdx: number): string[] {
-  if (repeat === 'daily') return ['RRULE:FREQ=DAILY'];
-  if (repeat === 'weekly') return [`RRULE:FREQ=WEEKLY;BYDAY=${RRULE_DAY[dayIdx]}`];
+function buildRRule(
+  repeat: string,
+  customDays: number[],
+  dayIdx: number,
+  repeatEnds: 'never' | 'on_date' | 'after',
+  repeatEndDate: string,
+  repeatEndCount: number,
+): string[] {
+  if (repeat === 'none') return [];
+  let endSuffix = '';
+  if (repeatEnds === 'on_date' && repeatEndDate) {
+    // Format date as YYYYMMDD for RRULE UNTIL
+    endSuffix = `;UNTIL=${repeatEndDate.replace(/-/g, '')}`;
+  } else if (repeatEnds === 'after' && repeatEndCount > 0) {
+    endSuffix = `;COUNT=${repeatEndCount}`;
+  }
+  if (repeat === 'daily') return [`RRULE:FREQ=DAILY${endSuffix}`];
+  if (repeat === 'weekly') return [`RRULE:FREQ=WEEKLY;BYDAY=${RRULE_DAY[dayIdx]}${endSuffix}`];
   if (repeat === 'custom' && customDays.length > 0)
-    return [`RRULE:FREQ=WEEKLY;BYDAY=${customDays.map(d => RRULE_DAY[d]).join(',')}`];
+    return [`RRULE:FREQ=WEEKLY;BYDAY=${customDays.map(d => RRULE_DAY[d]).join(',')}${endSuffix}`];
   return [];
 }
 
 const DEFAULT_FORM = {
   title: '',
   description: '',
+  location: '',
+  locationType: 'room' as LocationType,
+  timezone: getDefaultTimezone(),
   day: '1',
   startTime: '09:00',
   endTime: '10:00',
   color: '#4285f4',
   repeat: 'none',
   customDays: [] as number[],
+  repeatEnds: 'never' as 'never' | 'on_date' | 'after',
+  repeatEndDate: '',
+  repeatEndCount: 10,
+  calendarId: 'primary',
+  visibility: 'default',
   category: '',
   newCatInput: '',
   showNewCat: false,
@@ -152,7 +279,7 @@ interface DragGhost {
   title: string;
 }
 
-export default function WeekCalendar({ sessions = [], selectedSession, onSelectSession, onAddSession, onEditSession, onDeleteSession, onAcceptSession, onRejectSession, categories = [], onAddCategory, onDeleteCategory, toolbarExtra }: Props) {
+export default function WeekCalendar({ sessions = [], selectedSession, onSelectSession, onAddSession, onEditSession, onDeleteSession, onAcceptSession, onRejectSession, onOpenCreate, categories = [], onAddCategory, onDeleteCategory, calendars = [], toolbarExtra }: Props) {
   const [weekStart, setWeekStart] = useState(() =>
     startOfWeek(new Date(), { weekStartsOn: 0 })
   );
@@ -258,6 +385,11 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
     const { hour, min } = snapTo30(rawY);
     const startTime = `${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
     const endTime = addMins(startTime, 60);
+    if (onOpenCreate) {
+      const date = format(addDays(weekStart, colIdx), 'yyyy-MM-dd');
+      onOpenCreate(date, hour, min, 60);
+      return;
+    }
     setForm({ ...DEFAULT_FORM, day: String(colIdx), startTime, endTime });
     setShowModal(true);
   }
@@ -298,10 +430,15 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
     const [h, m] = form.startTime.split(':').map(Number);
     const dayIdx = Number(form.day);
     const date = format(addDays(weekStart, dayIdx), 'yyyy-MM-dd');
-    const recurrence = buildRRule(form.repeat, form.customDays, dayIdx);
+    const recurrence = buildRRule(form.repeat, form.customDays, dayIdx, form.repeatEnds, form.repeatEndDate, form.repeatEndCount);
     const sessionData = {
       title: form.title.trim(),
       description: form.description.trim(),
+      location: form.location.trim() || undefined,
+      locationType: form.location.trim() ? form.locationType : undefined,
+      timezone: form.timezone || getDefaultTimezone(),
+      calendarId: form.calendarId || 'primary',
+      visibility: form.visibility || 'default',
       date,
       dayIndex: dayIdx,
       startHour: h,
@@ -492,6 +629,93 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
             </div>
 
             <div className="modal-field">
+              <label>Location</label>
+              <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+                {form.locationType === 'address' ? (
+                  <AddressSearch
+                    value={form.location}
+                    onChange={loc => setForm(f => ({ ...f, location: loc }))}
+                    wrapperStyle={{ flex: 1 }}
+                  />
+                ) : (
+                  <div style={{ flex: 1 }}>
+                    <input
+                      value={form.location}
+                      onChange={e => setForm(f => ({ ...f, location: e.target.value }))}
+                      placeholder={form.locationType === 'meeting_link' ? 'Paste meeting link…' : 'Room, building, or anywhere'}
+                      style={{ width: '100%', boxSizing: 'border-box' }}
+                    />
+                    {form.locationType === 'meeting_link' && /^https?:\/\//i.test(form.location) && (
+                      <a
+                        href={form.location}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ display: 'block', marginTop: '0.25rem', fontSize: '0.76rem', color: '#1a73e8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      >↗ {form.location}</a>
+                    )}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: '0.25rem', flexShrink: 0, alignSelf: 'flex-start' }}>
+                  {([['room', '🏠', 'Room'], ['meeting_link', '🔗', 'Meeting link'], ['address', '📍', 'Address']] as [LocationType, string, string][]).map(([type, icon, title]) => (
+                    <button
+                      key={type}
+                      type="button"
+                      title={title}
+                      onClick={() => setForm(f => ({ ...f, locationType: type }))}
+                      style={{
+                        width: '36px', height: '36px', borderRadius: '8px', fontSize: '1.05rem',
+                        cursor: 'pointer', flexShrink: 0,
+                        border: form.locationType === type ? '1.5px solid #4285f4' : '1.5px solid #e0e0e0',
+                        background: form.locationType === type ? '#e8f0fe' : '#f8f9fa',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        transition: 'border-color 0.15s, background 0.15s',
+                      }}
+                    >{icon}</button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-field">
+              <label>Description</label>
+              <textarea
+                className="modal-textarea"
+                value={form.description}
+                onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+                placeholder="Add notes or agenda…"
+                rows={4}
+              />
+            </div>
+
+            <div className="modal-row">
+              <div className="modal-field">
+                <label>Calendar</label>
+                <select
+                  value={form.calendarId}
+                  onChange={e => setForm(f => ({ ...f, calendarId: e.target.value }))}
+                >
+                  {calendars.length > 0
+                    ? calendars.map(c => (
+                        <option key={c.id} value={c.id}>{c.summary}</option>
+                      ))
+                    : <option value="primary">Primary</option>
+                  }
+                </select>
+              </div>
+              <div className="modal-field">
+                <label>Visibility</label>
+                <select
+                  value={form.visibility}
+                  onChange={e => setForm(f => ({ ...f, visibility: e.target.value }))}
+                >
+                  <option value="default">Default</option>
+                  <option value="public">Public</option>
+                  <option value="private">Private</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="modal-field">
               <label>Day</label>
               <select value={form.day} onChange={e => setForm(f => ({ ...f, day: e.target.value }))}>
                 {DAY_NAMES.map((d, i) => (
@@ -543,6 +767,53 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
               </div>
             )}
 
+            {form.repeat !== 'none' && (
+              <div className="modal-field">
+                <label>Ends</label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                  {(['never', 'on_date', 'after'] as const).map(opt => (
+                    <label key={opt} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.88rem' }}>
+                      <input
+                        type="radio"
+                        name="repeatEnds"
+                        value={opt}
+                        checked={form.repeatEnds === opt}
+                        onChange={() => setForm(f => ({ ...f, repeatEnds: opt }))}
+                        style={{ cursor: 'pointer' }}
+                      />
+                      {opt === 'never' && 'Never'}
+                      {opt === 'on_date' && (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          On date
+                          <input
+                            type="date"
+                            value={form.repeatEndDate}
+                            min={form.repeatEnds === 'on_date' ? undefined : undefined}
+                            onChange={e => setForm(f => ({ ...f, repeatEndDate: e.target.value, repeatEnds: 'on_date' }))}
+                            style={{ fontSize: '0.82rem', padding: '0.1rem 0.3rem' }}
+                          />
+                        </span>
+                      )}
+                      {opt === 'after' && (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          After
+                          <input
+                            type="number"
+                            min={1}
+                            max={999}
+                            value={form.repeatEndCount}
+                            onChange={e => setForm(f => ({ ...f, repeatEndCount: Math.max(1, parseInt(e.target.value) || 1), repeatEnds: 'after' }))}
+                            style={{ width: '52px', fontSize: '0.82rem', padding: '0.1rem 0.3rem' }}
+                          />
+                          occurrences
+                        </span>
+                      )}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="modal-row">
               <div className="modal-field">
                 <label>Start time</label>
@@ -565,6 +836,19 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
                   onChange={e => setForm(f => ({ ...f, endTime: e.target.value }))}
                 />
               </div>
+            </div>
+
+            <div className="modal-field">
+              <label>Timezone</label>
+              <input
+                list="tz-list-add"
+                value={form.timezone}
+                onChange={e => setForm(f => ({ ...f, timezone: e.target.value }))}
+                placeholder="e.g. America/New_York"
+              />
+              <datalist id="tz-list-add">
+                {TIMEZONES.map(tz => <option key={tz} value={tz} />)}
+              </datalist>
             </div>
 
             <div className="modal-field">

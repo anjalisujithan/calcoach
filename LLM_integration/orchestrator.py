@@ -54,13 +54,14 @@ class SchedulingPipeline:
         calendar_json: Dict[str, List[str]],
         n_candidates: int = 5,
         model: str = "claude-opus-4-6",
+        extractor_model: str = "claude-haiku-4-5-20251001",
         alpha: float = 1.0,
     ) -> None:
         self.profile = user_profile
         self.calendar_json = calendar_json
         self.n_candidates = n_candidates
 
-        self._extractor = TaskExtractor(model=model)
+        self._extractor = TaskExtractor(model=extractor_model)
         self._generator = CandidateGenerator(model=model)
         self._validator = ScheduleValidator(user_profile.preferences)
         self._bandit = LinUCBBandit(alpha=alpha)
