@@ -257,7 +257,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
     inFlightTimeout.current = setTimeout(() => {
       abortReason.current = 'timeout';
       controller.abort();
-    }, 30_000);
+    }, 60_000);
 
     try {
       const res = await fetch(`${ANALYTICS_API}/chat`, {
