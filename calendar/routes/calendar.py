@@ -19,6 +19,7 @@ class NewEvent(BaseModel):
     startMin: int
     durationMins: int
     recurrence: list[str] = []  # e.g. ["RRULE:FREQ=WEEKLY;BYDAY=MO,WE"]
+    color: str = "#4285f4"
 
 
 @router.get("/calendars")
@@ -50,6 +51,22 @@ def get_busy(request: Request):
     service = get_calendar_service(tokens)
     busy = service.get_busy_times()
     return {"busy": busy}
+
+
+@router.get("/events/{event_id}")
+def get_event(
+    request: Request,
+    event_id: str,
+    calendarId: str = Query(default="primary"),
+):
+    tokens = request.session.get("tokens")
+    if not tokens:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    service = get_calendar_service(tokens)
+    event = service.get_event(event_id, calendar_id=calendarId)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return {"event": event}
 
 
 @router.delete("/events/{event_id}")
@@ -89,6 +106,7 @@ def update_event(request: Request, event_id: str, body: NewEvent):
         visibility=body.visibility,
         calendar_id=body.calendarId,
         recurrence=body.recurrence,
+        color=body.color,
     )
     return {"event": event}
 
@@ -115,5 +133,6 @@ def create_event(request: Request, body: NewEvent):
         visibility=body.visibility,
         calendar_id=body.calendarId,
         recurrence=body.recurrence,
+        color=body.color,
     )
     return {"event": event}

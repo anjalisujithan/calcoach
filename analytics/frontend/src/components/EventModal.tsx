@@ -262,6 +262,20 @@ function TimePickerInput({ value, onChange, label, minTime }: TimePickerProps) {
   );
 }
 
+// Convert Google-Calendar-style HTML descriptions into plain text so the
+// textarea shows readable content instead of raw <br>, <a href="…">, etc.
+function stripHtml(raw: string): string {
+  if (!raw) return '';
+  const normalized = raw
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
+    .replace(/<[^>]+>/g, '');
+  // Decode HTML entities (e.g. &amp;, &nbsp;, &#39;) via the browser.
+  const el = document.createElement('textarea');
+  el.innerHTML = normalized;
+  return el.value.replace(/\n{3,}/g, '\n\n').trim();
+}
+
 interface Props {
   session: Session;
   reflections: ReflectionEntry[];
@@ -287,7 +301,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
     session.locationType ?? detectLocationType(session.location ?? '')
   );
   const [timezone, setTimezone] = useState(session.timezone ?? getDefaultTimezone());
-  const [description, setDescription] = useState(session.description ?? '');
+  const [description, setDescription] = useState(stripHtml(session.description ?? ''));
   const [calendarId, setCalendarId] = useState(session.calendarId ?? 'primary');
   const [visibility, setVisibility] = useState(session.visibility ?? 'default');
   const [date, setDate] = useState(session.date);
@@ -300,6 +314,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
   const [editSaved, setEditSaved] = useState(false);
   const [recurrenceKey, setRecurrenceKey] = useState<string>(() => rruleToKey(session.recurrence));
   const [moreInfoOpen, setMoreInfoOpen] = useState(false);
+  const moreInfoRef = useRef<HTMLDivElement | null>(null);
 
   const [productivity, setProductivity] = useState<number | null>(null);
   const [sessionLength, setSessionLength] = useState<'too_short' | 'just_right' | 'too_long' | null>(null);
@@ -307,6 +322,30 @@ export default function EventModal({ session, reflections, categories = [], onAd
   const [breaks, setBreaks] = useState<'too_many' | 'just_right' | 'too_few' | null>(null);
   const [reflText, setReflText] = useState('');
   const [reflSaved, setReflSaved] = useState(false);
+
+  // Fetch base event's recurrence rule when this is a recurring instance (instances don't carry the RRULE)
+  useEffect(() => {
+    if (!session.recurringEventId || (session.recurrence && session.recurrence.length > 0)) return;
+    fetch(
+      `http://localhost:8000/calendar/events/${session.recurringEventId}?calendarId=${encodeURIComponent(session.calendarId ?? 'primary')}`,
+      { credentials: 'include' },
+    )
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        const rule = rruleToKey(data?.event?.recurrence);
+        if (rule !== 'none') setRecurrenceKey(rule);
+      })
+      .catch(() => {});
+  }, [session.id, session.recurringEventId]);
+
+  // When "More Info" expands, scroll the left column so the newly revealed
+  // fields come into view. We wait one frame so the expanded panel is laid out.
+  useEffect(() => {
+    if (!moreInfoOpen) return;
+    requestAnimationFrame(() => {
+      moreInfoRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [moreInfoOpen]);
 
   const [lastId, setLastId] = useState(session.id);
   if (session.id !== lastId) {
@@ -316,7 +355,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
     setLocation(session.location ?? '');
     setLocationType(session.locationType ?? detectLocationType(session.location ?? ''));
     setTimezone(session.timezone ?? getDefaultTimezone());
-    setDescription(session.description ?? '');
+    setDescription(stripHtml(session.description ?? ''));
     setCalendarId(session.calendarId ?? 'primary');
     setVisibility(session.visibility ?? 'default');
     setDate(session.date);
@@ -327,7 +366,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
     setShowNewCat(false);
     setNewCatInput('');
     setEditSaved(false);
-    setRecurrenceKey(rruleToKey(session.recurrence));
+    setRecurrenceKey(rruleToKey(session.recurrence));  // will be overridden by fetch below if it's a recurring instance
     setMoreInfoOpen(false);
     setProductivity(null);
     setSessionLength(null);
@@ -422,7 +461,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
           background: '#fff',
           borderRadius: '12px',
           boxShadow: '0 8px 40px rgba(0,0,0,0.18)',
-          width: '900px',
+          width: isNew ? '460px' : '900px',
           maxWidth: '96vw',
           maxHeight: '92vh',
           overflow: 'hidden',
@@ -505,20 +544,18 @@ export default function EventModal({ session, reflections, categories = [], onAd
         </div>
 
         {/* Two columns */}
-        <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0 }}>
+        <div style={{ display: 'flex', flex: isNew ? '0 0 auto' : 1, overflow: isNew ? 'visible' : 'hidden', minHeight: 0 }}>
 
           {/* ── Left: Edit ── */}
           <div style={{
-            flex: '0 0 420px',
+            flex: isNew ? 1 : '0 0 500px',
             padding: '20px 24px',
-            overflowY: 'auto',
-            borderRight: '1px solid #e8eaed',
+            overflowY: isNew ? 'visible' : 'auto',
+            borderRight: isNew ? 'none' : '1px solid #e8eaed',
             display: 'flex',
             flexDirection: 'column',
             gap: '14px',
           }}>
-            <div style={sectionLabel}>{isNew ? 'New Event' : 'Edit Event'}</div>
-
             {/* Title */}
             <div className="modal-field">
               <label>Title</label>
@@ -542,18 +579,6 @@ export default function EventModal({ session, reflections, categories = [], onAd
                 value={endTime}
                 onChange={setEndTime}
                 minTime={startTime}
-              />
-            </div>
-
-            {/* Description */}
-            <div className="modal-field">
-              <label>Description</label>
-              <textarea
-                className="modal-textarea"
-                value={description}
-                onChange={e => setDescription(e.target.value)}
-                placeholder="Add notes or agenda…"
-                rows={4}
               />
             </div>
 
@@ -638,58 +663,31 @@ export default function EventModal({ session, reflections, categories = [], onAd
               </div>
             </div>
 
-            {/* Category */}
-            <div className="modal-field">
-              <label>Category</label>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', marginTop: '4px' }}>
+            {/* Actions */}
+            <div style={{ display: 'flex', gap: '8px', paddingTop: '4px', flexWrap: 'wrap' }}>
+              <button className="btn-save" onClick={handleSaveEdit} disabled={!title.trim()}>
+                {isNew ? 'Add Session' : (editSaved ? '✓ Saved' : 'Save Changes')}
+              </button>
+              {!isNew && (
                 <button
-                  type="button"
-                  onClick={() => setCategory('')}
-                  style={pillBtn(category === '')}
-                >None</button>
-                {categories.map((c: string) => (
-                  <span key={c} style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
-                    <button type="button" onClick={() => setCategory(c)} style={pillBtn(category === c)}>{c}</button>
-                    <button
-                      type="button"
-                      title={`Delete "${c}"`}
-                      onClick={() => { onDeleteCategory?.(c); if (category === c) setCategory(''); }}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#bbb', fontSize: '10px', padding: '0', lineHeight: 1 }}
-                    >✕</button>
-                  </span>
-                ))}
-                {!showNewCat ? (
-                  <button type="button" onClick={() => setShowNewCat(true)}
-                    style={{ ...pillBtn(false), border: '1.5px dashed #bdc1c6', background: 'none' }}>
-                    + Add
-                  </button>
-                ) : (
-                  <div style={{ display: 'flex', gap: '4px', alignItems: 'center', width: '100%', marginTop: '2px' }}>
-                    <input
-                      autoFocus
-                      value={newCatInput}
-                      onChange={e => setNewCatInput(e.target.value)}
-                      placeholder="Category name"
-                      style={{ flex: 1, fontSize: '12px', padding: '4px 8px', border: '1px solid #dadce0', borderRadius: '4px', outline: 'none' }}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter' && newCatInput.trim()) {
-                          onAddCategory?.(newCatInput.trim()); setCategory(newCatInput.trim()); setNewCatInput(''); setShowNewCat(false);
-                        } else if (e.key === 'Escape') { setNewCatInput(''); setShowNewCat(false); }
-                      }}
-                    />
-                    <button type="button" className="btn-save" style={{ padding: '4px 10px', fontSize: '12px' }}
-                      onClick={() => { if (newCatInput.trim()) { onAddCategory?.(newCatInput.trim()); setCategory(newCatInput.trim()); setNewCatInput(''); setShowNewCat(false); } }}>
-                      Add
-                    </button>
-                    <button type="button" onClick={() => { setNewCatInput(''); setShowNewCat(false); }}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#aaa', fontSize: '14px' }}>✕</button>
-                  </div>
-                )}
-              </div>
+                  onClick={() => { onDelete(session.id); onClose(); }}
+                  style={{ background: '#fce8e6', color: '#c5221f', border: 'none', borderRadius: '6px', padding: '8px 14px', cursor: 'pointer', fontWeight: 500, fontSize: '13px' }}
+                >
+                  Delete
+                </button>
+              )}
+              {!isNew && onDeleteSeries && session.recurringEventId && (
+                <button
+                  onClick={() => { onDeleteSeries(session.recurringEventId!); onClose(); }}
+                  style={{ background: '#fce8e6', color: '#c5221f', border: 'none', borderRadius: '6px', padding: '8px 14px', cursor: 'pointer', fontWeight: 500, fontSize: '13px' }}
+                >
+                  Delete All Repeating Events
+                </button>
+              )}
             </div>
 
-            {/* More Info collapsible — advanced fields only */}
-            <div>
+            {/* More Info collapsible — at the bottom so it never shifts the Save button */}
+            <div ref={moreInfoRef} style={{ scrollMarginTop: '8px' }}>
               <button
                 type="button"
                 onClick={() => setMoreInfoOpen(o => !o)}
@@ -718,29 +716,61 @@ export default function EventModal({ session, reflections, categories = [], onAd
 
               {moreInfoOpen && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '12px', paddingTop: '12px', borderTop: '1px solid #f1f3f4' }}>
-                  <div className="modal-row">
-                    <div className="modal-field">
-                      <label>Calendar</label>
-                      {calendars.length > 0 ? (
-                        <select value={calendarId} onChange={e => setCalendarId(e.target.value)}>
-                          {calendars.map(c => (
-                            <option key={c.id} value={c.id}>{c.summary}</option>
-                          ))}
-                        </select>
+                  {/* Category */}
+                  <div className="modal-field">
+                    <label>Category</label>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', marginTop: '4px' }}>
+                      <button type="button" onClick={() => setCategory('')} style={pillBtn(category === '')}>None</button>
+                      {categories.map((c: string) => (
+                        <span key={c} style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
+                          <button type="button" onClick={() => setCategory(c)} style={pillBtn(category === c)}>{c}</button>
+                          <button
+                            type="button"
+                            title={`Delete "${c}"`}
+                            onClick={() => { onDeleteCategory?.(c); if (category === c) setCategory(''); }}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#bbb', fontSize: '10px', padding: '0', lineHeight: 1 }}
+                          >✕</button>
+                        </span>
+                      ))}
+                      {!showNewCat ? (
+                        <button type="button" onClick={() => setShowNewCat(true)}
+                          style={{ ...pillBtn(false), border: '1.5px dashed #bdc1c6', background: 'none' }}>
+                          + Add
+                        </button>
                       ) : (
-                        <div style={{ fontSize: '0.82rem', color: '#888', padding: '0.3rem 0' }}>
-                          {calendarId === 'primary' ? 'Primary' : calendarId}
+                        <div style={{ display: 'flex', gap: '4px', alignItems: 'center', width: '100%', marginTop: '2px' }}>
+                          <input
+                            autoFocus
+                            value={newCatInput}
+                            onChange={e => setNewCatInput(e.target.value)}
+                            placeholder="Category name"
+                            style={{ flex: 1, fontSize: '12px', padding: '4px 8px', border: '1px solid #dadce0', borderRadius: '4px', outline: 'none' }}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' && newCatInput.trim()) {
+                                onAddCategory?.(newCatInput.trim()); setCategory(newCatInput.trim()); setNewCatInput(''); setShowNewCat(false);
+                              } else if (e.key === 'Escape') { setNewCatInput(''); setShowNewCat(false); }
+                            }}
+                          />
+                          <button type="button" className="btn-save" style={{ padding: '4px 10px', fontSize: '12px' }}
+                            onClick={() => { if (newCatInput.trim()) { onAddCategory?.(newCatInput.trim()); setCategory(newCatInput.trim()); setNewCatInput(''); setShowNewCat(false); } }}>
+                            Add
+                          </button>
+                          <button type="button" onClick={() => { setNewCatInput(''); setShowNewCat(false); }}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#aaa', fontSize: '14px' }}>✕</button>
                         </div>
                       )}
                     </div>
-                    <div className="modal-field">
-                      <label>Visibility</label>
-                      <select value={visibility} onChange={e => setVisibility(e.target.value)}>
-                        <option value="default">Default</option>
-                        <option value="public">Public</option>
-                        <option value="private">Private</option>
-                      </select>
-                    </div>
+                  </div>
+
+                  <div className="modal-field">
+                    <label>Description</label>
+                    <textarea
+                      className="modal-textarea"
+                      value={description}
+                      onChange={e => setDescription(e.target.value)}
+                      placeholder=""
+                      rows={4}
+                    />
                   </div>
 
                   <div className="modal-field">
@@ -758,33 +788,10 @@ export default function EventModal({ session, reflections, categories = [], onAd
                 </div>
               )}
             </div>
-
-            {/* Actions */}
-            <div style={{ display: 'flex', gap: '8px', paddingTop: '4px', flexWrap: 'wrap' }}>
-              <button className="btn-save" onClick={handleSaveEdit} disabled={!title.trim()}>
-                {isNew ? 'Add Session' : (editSaved ? '✓ Saved' : 'Save Changes')}
-              </button>
-              {!isNew && (
-                <button
-                  onClick={() => { onDelete(session.id); onClose(); }}
-                  style={{ background: '#fce8e6', color: '#c5221f', border: 'none', borderRadius: '6px', padding: '8px 14px', cursor: 'pointer', fontWeight: 500, fontSize: '13px' }}
-                >
-                  Delete
-                </button>
-              )}
-              {!isNew && onDeleteSeries && session.recurringEventId && (
-                <button
-                  onClick={() => { onDeleteSeries(session.recurringEventId!); onClose(); }}
-                  style={{ background: '#fce8e6', color: '#c5221f', border: 'none', borderRadius: '6px', padding: '8px 14px', cursor: 'pointer', fontWeight: 500, fontSize: '13px' }}
-                >
-                  Delete All Repeating Events
-                </button>
-              )}
-            </div>
           </div>
 
-          {/* ── Right: Reflect ── */}
-          <div style={{
+          {/* ── Right: Reflect (hidden for new events) ── */}
+          {!isNew && <div style={{
             flex: 1,
             padding: '20px 24px',
             overflowY: 'auto',
@@ -892,7 +899,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
                 ))}
               </div>
             )}
-          </div>
+          </div>}
         </div>
       </div>
     </div>
