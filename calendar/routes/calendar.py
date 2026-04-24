@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Request, HTTPException, Query
 from pydantic import BaseModel
 from services.google_calendar import get_calendar_service
 
@@ -9,11 +9,25 @@ router = APIRouter(prefix="/calendar")
 class NewEvent(BaseModel):
     title: str
     description: str = ""
+    location: str = ""
+    locationType: str = "room"  # "room" | "meeting_link" | "address"
+    timezone: str = "America/Los_Angeles"
+    calendarId: str = "primary"
+    visibility: str = "default"  # "default" | "public" | "private"
     date: str        # "yyyy-MM-dd"
     startHour: int
     startMin: int
     durationMins: int
     recurrence: list[str] = []  # e.g. ["RRULE:FREQ=WEEKLY;BYDAY=MO,WE"]
+
+
+@router.get("/calendars")
+def list_calendars(request: Request):
+    tokens = request.session.get("tokens")
+    if not tokens:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    service = get_calendar_service(tokens)
+    return {"calendars": service.get_calendar_list()}
 
 
 @router.get("/events")
@@ -39,12 +53,16 @@ def get_busy(request: Request):
 
 
 @router.delete("/events/{event_id}")
-def delete_event(request: Request, event_id: str):
+def delete_event(
+    request: Request,
+    event_id: str,
+    calendarId: str = Query(default="primary"),
+):
     tokens = request.session.get("tokens")
     if not tokens:
         raise HTTPException(status_code=401, detail="Not authenticated")
     service = get_calendar_service(tokens)
-    service.delete_event(event_id)
+    service.delete_event(event_id, calendar_id=calendarId)
     return {"ok": True}
 
 
@@ -65,6 +83,11 @@ def update_event(request: Request, event_id: str, body: NewEvent):
         start=start_dt.strftime("%Y-%m-%dT%H:%M:%S"),
         end=end_dt.strftime("%Y-%m-%dT%H:%M:%S"),
         description=body.description,
+        location=body.location,
+        location_type=body.locationType,
+        timezone=body.timezone,
+        visibility=body.visibility,
+        calendar_id=body.calendarId,
         recurrence=body.recurrence,
     )
     return {"event": event}
@@ -86,6 +109,11 @@ def create_event(request: Request, body: NewEvent):
         start=start_dt.strftime("%Y-%m-%dT%H:%M:%S"),
         end=end_dt.strftime("%Y-%m-%dT%H:%M:%S"),
         description=body.description,
+        location=body.location,
+        location_type=body.locationType,
+        timezone=body.timezone,
+        visibility=body.visibility,
+        calendar_id=body.calendarId,
         recurrence=body.recurrence,
     )
     return {"event": event}
