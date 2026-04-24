@@ -284,7 +284,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
     inFlightTimeout.current = setTimeout(() => {
       abortReason.current = 'timeout';
       controller.abort();
-    }, 30_000);
+    }, 60_000);
 
     try {
       const res = await fetch(`${ANALYTICS_API}/chat`, {
@@ -368,7 +368,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
       const msg = err?.name === 'AbortError'
         ? reason === 'user'
           ? 'Stopped.'
-          : 'Request timed out (>30s). The scheduling engine may be overloaded — try again.'
+          : 'Request timed out (>60s). The scheduling engine may be overloaded — try again.'
         : 'Error reaching CalCoach backend.';
       setMessages(m => m.map(msg2 => msg2.id === thinkingMsg.id ? { ...msg2, text: msg } : msg2));
     }

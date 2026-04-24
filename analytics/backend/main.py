@@ -302,6 +302,29 @@ class UserRegisterIn(BaseModel):
 _current_user_email: str = ""  # tracks the logged-in user's email for bandit persistence
 
 
+@app.get("/users/search", response_model=List[UserOut])
+async def search_users(q: str = "", exclude: str = ""):
+    db = get_db()
+    out: List[UserOut] = []
+    q_lower = q.strip().lower()
+    exclude_lower = exclude.strip().lower()
+    async for doc in db.collection(USERS_COLLECTION).stream():
+        data = doc.to_dict() or {}
+        email = (data.get("email") or "").lower()
+        if email == exclude_lower:
+            continue
+        display = (data.get("displayName") or "").lower()
+        if q_lower and q_lower not in email and q_lower not in display:
+            continue
+        out.append(UserOut(
+            id=doc.id,
+            displayName=data.get("displayName", ""),
+            email=data.get("email", ""),
+            createdAt=data.get("createdAt", ""),
+        ))
+    return out
+
+
 @app.post("/users/register", status_code=201)
 async def register_user(body: UserRegisterIn):
     """Create a student document on first signup (idempotent — no-op if already exists)."""
@@ -765,6 +788,78 @@ async def _load_user_ai_summary(user_email: str) -> str:
 
 def _is_scheduling_request(message: str) -> bool:
     return bool(_SCHED_INTENT_RE.search(message or ""))
+
+
+def _fetch_attendee_sessions(tokens: dict) -> List[dict]:
+    """Fetch the attendee's upcoming Google Calendar events using their stored tokens."""
+    if not _GCAL_AVAILABLE:
+        print("[joint] google-api-python-client not installed — skipping attendee calendar fetch")
+        return []
+    try:
+        from datetime import timedelta
+        creds = _GCreds(
+            token=tokens["access_token"],
+            refresh_token=tokens.get("refresh_token"),
+            token_uri=tokens.get("token_uri", "https://oauth2.googleapis.com/token"),
+            client_id=tokens.get("client_id"),
+            client_secret=tokens.get("client_secret"),
+            scopes=tokens.get("scopes", ["https://www.googleapis.com/auth/calendar"]),
+        )
+        service = _gcal_build("calendar", "v3", credentials=creds)
+        now = datetime.now(timezone.utc)
+        result = service.events().list(
+            calendarId="primary",
+            timeMin=(now - timedelta(days=183)).isoformat(),
+            timeMax=(now + timedelta(days=183)).isoformat(),
+            maxResults=1500,
+            singleEvents=True,
+            orderBy="startTime",
+        ).execute()
+        sessions = [_gcal_event_to_session(e) for e in result.get("items", [])]
+        return [s for s in sessions if s is not None]
+    except Exception as e:
+        print(f"[joint] Failed to fetch attendee calendar: {e}")
+        return []
+
+
+async def _load_attendee_profile(email: str):
+    """Load a UserProfile for the attendee from Firestore."""
+    if not _RL_AVAILABLE:
+        return None
+    try:
+        db = get_db()
+        doc = await db.collection(USERS_COLLECTION).document(email).get()
+        if not doc.exists:
+            print(f"[joint] Attendee {email} has no CalCoach account")
+            return None
+        data = doc.to_dict() or {}
+        profile = UserProfile.new_user(
+            user_id=email,
+            name=data.get("displayName", email),
+            preferences=UserPreferences(
+                work_start="09:00",
+                work_end="21:00",
+                avoid_days=[],
+                buffer_minutes=10,
+                max_daily_work_minutes=360,
+            ),
+        )
+        bs_json = data.get("bandit_state_json")
+        if bs_json:
+            from calcoach.user_profile.bandit_state import BanditState
+            bs = json.loads(bs_json)
+            if bs.get("A") and bs.get("b"):
+                profile.bandit_state = BanditState.from_dict(bs)
+        return profile
+    except Exception as e:
+        print(f"[joint] Failed to load attendee profile for {email}: {e}")
+        return None
+
+
+def _extract_attendee_email(message: str) -> Optional[str]:
+    """Pull the first @email mention out of a chat message."""
+    m = _AT_EMAIL_RE.search(message)
+    return m.group(1).lower() if m else None
 
 
 def _sanitize_session_for_sharing(session: dict) -> Optional[dict]:
