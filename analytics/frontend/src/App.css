@@ -704,6 +704,21 @@ body {
   color: #5f6368;
 }
 
+.mention-option--disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.mention-option--disabled:hover {
+  background: none;
+}
+
+.mention-option-tag {
+  font-size: 10px;
+  color: #999;
+  margin-top: 2px;
+}
+
 .chat-input-row {
   display: flex;
   align-items: center;

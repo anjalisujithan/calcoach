@@ -134,10 +134,12 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   const inFlightController = useRef<AbortController | null>(null);
   const inFlightTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortReason = useRef<'user' | 'timeout' | null>(null);
-  /** groupId → { slotIndex, events[] } for /feedback + multi-block GCal create */
-  const pendingSlotMap = useRef<Map<string, { slotIndex: number; events: any[] }>>(new Map());
+  /** groupId → { slotIndex, events[], attendeeEmails? } for /feedback + multi-block GCal create */
+  const pendingSlotMap = useRef<Map<string, { slotIndex: number; events: any[]; attendeeEmails?: string[] }>>(new Map());
   /** pending block session id → groupId */
   const pendingSessionToGroup = useRef<Map<string, string>>(new Map());
+  /** attendee emails mentioned anywhere in the current chat thread — persists across turns */
+  const activeAttendeeEmails = useRef<string[]>([]);
 
   const selectedSession = sessions.find(s => s.id === selectedSessionId) ?? null;
 
@@ -295,11 +297,17 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
     clearPendingSuggestions();
     setChatHistory([]);
     setMessages(getInitialMessages());
+    activeAttendeeEmails.current = [];
   }
 
   async function handleSend(text: string) {
     if (chatLoading) return;
     const userMsg: Message = { id: mkId(), role: 'user', text };
+    const atRe2 = /@([\w.+\-]+@[\w.\-]+\.\w{2,})/g;
+    let m2; while ((m2 = atRe2.exec(text)) !== null) {
+      const e = m2[1].toLowerCase();
+      if (!activeAttendeeEmails.current.includes(e)) activeAttendeeEmails.current.push(e);
+    }
     setMessages(m => [...m, userMsg]);
 
     const controller = new AbortController();
@@ -308,7 +316,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
     inFlightTimeout.current = setTimeout(() => {
       abortReason.current = 'timeout';
       controller.abort();
-    }, 60_000);
+    }, 120_000);
 
     try {
       const res = await fetch(`${ANALYTICS_API}/chat`, {
@@ -339,6 +347,8 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
         pendingSlotMap.current.clear();
         pendingSessionToGroup.current.clear();
 
+        const attendeeEmails = [...activeAttendeeEmails.current];
+
         const toAdd: Session[] = [];
         for (const suggestion of suggestions) {
           const events: any[] =
@@ -346,7 +356,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
               ? suggestion.calendar_blocks
               : [suggestion.slot];
           const groupId = mkId();
-          pendingSlotMap.current.set(groupId, { slotIndex: suggestion.rank - 1, events });
+          pendingSlotMap.current.set(groupId, { slotIndex: suggestion.rank - 1, events, attendeeEmails });
 
           events.forEach((event: any, i: number) => {
             const pendingId = mkId();
@@ -398,7 +408,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
       const msg = err?.name === 'AbortError'
         ? reason === 'user'
           ? 'Stopped.'
-          : 'Request timed out (>60s). The scheduling engine may be overloaded — try again.'
+          : 'Request timed out (>120s). The scheduling engine may be overloaded — try again.'
         : 'Error reaching CalCoach backend.';
       setMessages(m => [...m, { id: mkId(), role: 'assistant', text: msg }]);
     }
@@ -436,6 +446,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
                 startMin: e.startMin,
                 durationMins: e.durationMins,
                 recurrence: [],
+                attendees: info.attendeeEmails?.length ? [userEmail, ...info.attendeeEmails].filter(Boolean) : [],
               }),
             });
             const d = await res.json();

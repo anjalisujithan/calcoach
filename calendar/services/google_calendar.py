@@ -140,7 +140,7 @@ class GoogleCalendarService:
         body["recurrence"] = recurrence  # always set — empty list clears recurrence on GCal
         return self.service.events().patch(calendarId=calendar_id, eventId=event_id, body=body).execute()
 
-    def add_event(self, summary: str, start: str, end: str, description: str = "", location: str = "", location_type: str = "room", timezone: str = "America/Los_Angeles", visibility: str = "default", calendar_id: str = "primary", recurrence: list = [], color: str = "#4285f4") -> dict:
+    def add_event(self, summary: str, start: str, end: str, description: str = "", location: str = "", location_type: str = "room", timezone: str = "America/Los_Angeles", visibility: str = "default", calendar_id: str = "primary", recurrence: list = [], color: str = "#4285f4", attendees: list = []) -> dict:
         event = {
             "summary": summary,
             "description": description,
@@ -154,4 +154,9 @@ class GoogleCalendarService:
         }
         if recurrence:
             event["recurrence"] = recurrence
-        return self.service.events().insert(calendarId=calendar_id, body=event).execute()
+        valid_attendees = [a for a in attendees if a and "@" in a]
+        if valid_attendees:
+            event["attendees"] = [{"email": a} for a in valid_attendees]
+        send_updates = "all" if valid_attendees else "none"
+        print(f"[gcal] inserting event '{summary}' attendees={valid_attendees} sendUpdates={send_updates}")
+        return self.service.events().insert(calendarId=calendar_id, body=event, sendUpdates=send_updates).execute()

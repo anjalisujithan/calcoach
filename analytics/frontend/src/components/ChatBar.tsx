@@ -48,6 +48,7 @@ export interface Message {
 interface UserSuggestion {
   email: string;
   displayName: string;
+  hasCalendar?: boolean;
 }
 
 interface Props {
@@ -150,6 +151,8 @@ export default function ChatBar({ headerLabel, placeholder, messages, onSend, co
   }
 
   function insertMention(user: UserSuggestion) {
+    if (!user.hasCalendar) return;
+
     const el = editableRef.current;
     if (!el) return;
 
@@ -198,6 +201,7 @@ export default function ChatBar({ headerLabel, placeholder, messages, onSend, co
       }
     }
 
+
     setMentionQuery(null);
     setMentionResults([]);
     setIsEmpty(false);
@@ -217,7 +221,8 @@ export default function ChatBar({ headerLabel, placeholder, messages, onSend, co
       }
       if (e.key === 'Tab' || e.key === 'Enter') {
         e.preventDefault();
-        insertMention(mentionResults[mentionIndex]);
+        const candidate = mentionResults[mentionIndex];
+        if (candidate?.hasCalendar) insertMention(candidate);
         return;
       }
       if (e.key === 'Escape') {
@@ -335,11 +340,13 @@ export default function ChatBar({ headerLabel, placeholder, messages, onSend, co
             {mentionResults.map((u, i) => (
               <div
                 key={u.email}
-                className={`mention-option${i === mentionIndex ? ' mention-option--active' : ''}`}
+                className={`mention-option${i === mentionIndex && u.hasCalendar ? ' mention-option--active' : ''}${!u.hasCalendar ? ' mention-option--disabled' : ''}`}
                 onMouseDown={e => { e.preventDefault(); insertMention(u); }}
+                title={!u.hasCalendar ? 'This user has not connected Google Calendar' : undefined}
               >
                 <span className="mention-option-name">{u.displayName || u.email}</span>
                 <span className="mention-option-email">{u.email}</span>
+                {!u.hasCalendar && <span className="mention-option-tag">No calendar</span>}
               </div>
             ))}
           </div>

@@ -11,8 +11,7 @@ import './App.css';
 
 type Tab = 'calendar' | 'analytics' | 'preferences';
 
-let idCounter = 0;
-const mkId = () => String(++idCounter);
+const mkId = () => crypto.randomUUID();
 
 const API = 'http://localhost:8001';
 
@@ -27,7 +26,7 @@ function AppShell() {
 
   useEffect(() => {
     if (!user) return;
-    fetch(`${API}/reflections?user_id=${encodeURIComponent(user.email ?? '')}`)
+    fetch(`${API}/reflections?user_id=${encodeURIComponent(user.uid ?? '')}`)
       .then(r => r.json())
       .then((data: ReflectionEntry[]) => {
         setReflections(data);
@@ -50,7 +49,7 @@ function AppShell() {
   async function handleSaveReflection(entry: Omit<ReflectionEntry, 'id' | 'savedAt'>) {
     const newEntry: ReflectionEntry = {
       ...entry,
-      userId: user!.email ?? '',
+      userId: user!.uid,
       id: mkId(),
       savedAt: new Date().toISOString(),
     };
