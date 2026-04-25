@@ -19,6 +19,7 @@ class NewEvent(BaseModel):
     startMin: int
     durationMins: int
     recurrence: list[str] = []  # e.g. ["RRULE:FREQ=WEEKLY;BYDAY=MO,WE"]
+    attendees: list[str] = []   # email addresses to invite
     color: str = "#4285f4"
 
 
@@ -121,6 +122,7 @@ def create_event(request: Request, body: NewEvent):
     start_dt = datetime(year, month, day, body.startHour, body.startMin)
     end_dt = start_dt + timedelta(minutes=body.durationMins)
 
+    print(f"[calendar] create_event '{body.title}' attendees={body.attendees}")
     service = get_calendar_service(tokens)
     event = service.add_event(
         summary=body.title,
@@ -133,6 +135,7 @@ def create_event(request: Request, body: NewEvent):
         visibility=body.visibility,
         calendar_id=body.calendarId,
         recurrence=body.recurrence,
+        attendees=body.attendees,
         color=body.color,
     )
     return {"event": event}

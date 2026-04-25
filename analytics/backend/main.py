@@ -355,6 +355,7 @@ class UserOut(BaseModel):
     displayName: str
     email: str
     createdAt: str
+    hasCalendar: bool = False
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -539,6 +540,7 @@ _current_user_email: str = ""  # tracks the logged-in user's email for bandit pe
 
 @app.get("/users/search", response_model=List[UserOut])
 async def search_users(q: str = "", exclude: str = ""):
+    from firestore_client import get_calendar_tokens
     db = get_db()
     out: List[UserOut] = []
     q_lower = q.strip().lower()
@@ -551,11 +553,13 @@ async def search_users(q: str = "", exclude: str = ""):
         display = (data.get("displayName") or "").lower()
         if q_lower and q_lower not in email and q_lower not in display:
             continue
+        tokens = await get_calendar_tokens(email) if email else None
         out.append(UserOut(
             id=doc.id,
             displayName=data.get("displayName", ""),
             email=data.get("email", ""),
             createdAt=data.get("createdAt", ""),
+            hasCalendar=bool(tokens),
         ))
     return out
 
@@ -733,17 +737,23 @@ RECENT SESSION NOTES FROM THE USER:
 
 Your job is to deeply analyze user data for any patters and trends in their behaviour and provide helpful feedback on their productivity exclusively on scheduling tasks.
 
-"feedback": A string of 4–6 coaching bullet points (each starting with •). Rules:
-- Each bullet point should be an observation that the user might not already know, e.g. "You seem to be spending more time on math than you do on CS61A, but you might wanna start studying for the upcoming midterm." ,"You seem to be working more productively in the mornings this week, consider scheduling high mental effort tasks in the mornings.",  "Your afternoon gym sessions seem to be draining/fueling your productivity on Tuesdays, conisder.."
-- Provide feedback and don't state the obvious and don't repeat yourself and don't use too cringe language, simple nice friendly language.
-- Reference actual subjects, hours, and days from the data
-- Your main goal is to mention something that they might not already know about themselves, or something that they might not have thought of before.
-- Provide genuine useful advice in a positive tone. 
-- Focus on 3 main points that really would help them the most.
-- Be scientifically grounded and use data to support your advice.
-- Under 220 words; no title
+Respond with ONLY a JSON object in exactly this format (no other keys):
+{{
+  "feedback": "• First bullet point here.\n• Second bullet point here.\n• Third bullet point here.",
+  "user_summary": "Three to four sentence profile here."
+}}
 
-"user_summary": A 3–4 sentence internal profile written in third person. Cover in order: (1) who they appear to be and what they work on, (2) their main subjects/commitments by time spent, (3) their peak productive hours and best days, (4) any notable patterns such as underestimating session length, timing issues, or break needs. Be concise and factual — this is used by the scheduling system to personalise future suggestions."""
+Rules for "feedback" (MUST be a plain string, NOT a JSON array):
+- A single string containing 3 bullet points, each starting with •, separated by newlines
+- Each bullet is an observation the user might not know, e.g. "• You seem to work more productively in the mornings — consider scheduling high-effort tasks before noon."
+- Reference actual subjects, hours, and days from the data
+- Simple, friendly language; no clichés
+- Under 220 words total
+
+Rules for "user_summary":
+- 3–4 sentences, third person, factual
+- Cover: who they are and what they work on, main subjects by time, peak hours and best days, any notable patterns
+- Used by the scheduling system to personalise future suggestions"""
 
 # - Each point is 1–2 sentences: lead with a genuine strength or positive observation, then frame any improvement as an exciting opportunity ("you could unlock even more by…", "imagine how much you'd get done if…", "one small shift that could make a big difference…")
 
@@ -766,7 +776,7 @@ async def get_insights(body: InsightsRequest):
     try:
         client = AsyncGroq(api_key=api_key)
         completion = await client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[
                 {"role": "system", "content": "You are CalCoach, a productivity coach. Always respond with valid JSON only."},
                 {"role": "user", "content": prompt},
@@ -786,7 +796,10 @@ async def get_insights(body: InsightsRequest):
     except json.JSONDecodeError:
         parsed = {}
 
-    feedback = (parsed.get("feedback") or "").strip()
+    feedback = parsed.get("feedback") or ""
+    if isinstance(feedback, list):
+        feedback = " ".join(feedback)
+    feedback = feedback.strip()
     user_summary_text = (parsed.get("user_summary") or "").strip()
 
     # Persist ai_summary into the existing email-keyed user document
@@ -882,7 +895,7 @@ async def respond_to_shared_invite(
 HISTORY_THRESHOLD = 8
 KEEP_RECENT = 4
 TARGET_VIABLE_SUGGESTIONS = 3
-SCHEDULING_REPAIR_MAX_ROUNDS = 2   # each round is a full LLM call; keep tight to avoid timeouts
+SCHEDULING_REPAIR_MAX_ROUNDS = 6
 
 
 async def _compress_history(
@@ -892,7 +905,7 @@ async def _compress_history(
     recent = history[-KEEP_RECENT:]
     convo_text = "\n".join(f"{m.role.upper()}: {m.text}" for m in to_summarize)
     summary_completion = await client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
         messages=[
             {"role": "system", "content": (
                 "Summarize the following conversation between a user and CalCoach "
@@ -1039,6 +1052,29 @@ DURATION RULE (hard):
 Do not include any text outside the JSON object."""
 
 
+def _gcal_event_to_session(event: dict) -> Optional[dict]:
+    """Convert a raw Google Calendar event dict to the internal session format."""
+    start_str = (event.get("start") or {}).get("dateTime") or (event.get("start") or {}).get("date", "")
+    end_str = (event.get("end") or {}).get("dateTime") or (event.get("end") or {}).get("date", "")
+    if not start_str or not end_str:
+        return None
+    try:
+        start = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+        duration_mins = int((end - start).total_seconds() / 60)
+        return {
+            "id": event.get("id", ""),
+            "title": event.get("summary", "(No title)"),
+            "description": event.get("description", ""),
+            "date": start_str[:10],
+            "startHour": start.hour,
+            "startMin": start.minute,
+            "durationMins": duration_mins,
+        }
+    except Exception:
+        return None
+
+
 async def _load_user_ai_summary(user_email: str) -> str:
     """
     Load the saved AI user summary from the users collection.
@@ -1087,9 +1123,9 @@ def _fetch_attendee_sessions(tokens: dict) -> List[dict]:
         now = datetime.now(timezone.utc)
         result = service.events().list(
             calendarId="primary",
-            timeMin=(now - timedelta(days=183)).isoformat(),
-            timeMax=(now + timedelta(days=183)).isoformat(),
-            maxResults=1500,
+            timeMin=now.isoformat(),
+            timeMax=(now + timedelta(days=21)).isoformat(),
+            maxResults=300,
             singleEvents=True,
             orderBy="startTime",
         ).execute()
@@ -1134,12 +1170,9 @@ async def _load_attendee_profile(email: str):
         return None
 
 
-def _extract_attendee_email(message: str) -> Optional[str]:
-    """Extract the first @email mention from the message, if any.
-    e.g. 'schedule with @alice@example.com' → 'alice@example.com'
-    """
-    m = _AT_EMAIL_RE.search(message or "")
-    return m.group(1).lower() if m else None
+def _extract_attendee_emails(message: str) -> List[str]:
+    """Pull all @email mentions out of a chat message."""
+    return [m.lower() for m in _AT_EMAIL_RE.findall(message)]
 
 
 def _sanitize_session_for_sharing(session: dict) -> Optional[dict]:
@@ -1757,7 +1790,10 @@ async def _repair_scheduling_until_viable(
     repair_round = 0
     while len(viable_acc) < TARGET_VIABLE_SUGGESTIONS and repair_round < SCHEDULING_REPAIR_MAX_ROUNDS:
         repair_round += 1
-        avail_txt = _format_date_specific_availability(sessions, prefs)
+        import time as _time
+        _t0 = _time.time()
+        print(f"[schedule] repair round {repair_round}/{SCHEDULING_REPAIR_MAX_ROUNDS} — viable so far: {len(viable_acc)}/{TARGET_VIABLE_SUGGESTIONS}")
+        avail_txt = _format_date_specific_availability(sessions, prefs, days_ahead=21)
         diag = _diagnose_bundles_for_prompt(bundles_in, sessions, prefs, target_minutes=target_minutes)
         valid_json = ""
         if viable_acc:
@@ -1790,11 +1826,12 @@ async def _repair_scheduling_until_viable(
             {"role": "user", "content": repair_content},
         ]
         comp = await client.chat.completions.create(
-            model="llama-3.1-8b-instant",   # fast model for repair rounds; saves ~6s per round
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=messages2,
             response_format={"type": "json_object"},
         )
         current_raw = comp.choices[0].message.content
+        print(f"[schedule] repair round {repair_round} took {_time.time() - _t0:.1f}s")
         try:
             current_parsed = json.loads(current_raw)
         except json.JSONDecodeError:
@@ -1830,10 +1867,10 @@ async def chat(body: ChatMessage):
 
     client = AsyncGroq(api_key=api_key)
 
-    # ── Joint scheduling: detect @email mention and load attendee data ─────────
-    attendee_email = _extract_attendee_email(body.message)
+    # ── Joint scheduling: detect @email mentions and load attendee data ──────────
+    attendee_emails: List[str] = _extract_attendee_emails(body.message)
     requester_email = (body.requester_email or "").strip().lower()
-    is_joint_scheduling = bool(attendee_email) and _is_scheduling_request(body.message)
+    is_joint_scheduling = bool(attendee_emails) and _is_scheduling_request(body.message)
     requester_ai_summary = await _load_user_ai_summary(requester_email)
     requester_sessions: List[dict] = list(body.sessions)
     attendee_profile = None
@@ -1851,54 +1888,58 @@ async def chat(body: ChatMessage):
                     f"[joint] Resynced requester calendar from Google: "
                     f"{requester_email} ({len(requester_sessions)} sessions)"
                 )
+                for ae in attendee_emails:
+                    await _save_shared_availability_snapshot(
+                        requester_email,
+                        requester_sessions,
+                        source="requester_google_resync",
+                        peer_email=ae,
+                    )
+        if requester_sessions:
+            for ae in attendee_emails:
                 await _save_shared_availability_snapshot(
                     requester_email,
                     requester_sessions,
-                    source="requester_google_resync",
-                    peer_email=attendee_email,
+                    source="requester_chat_context",
+                    peer_email=ae,
                 )
-        # Fallback: still save latest client-provided schedule projection for requester.
-        if requester_sessions:
-            await _save_shared_availability_snapshot(
-                requester_email,
-                requester_sessions,
-                source="requester_chat_context",
-                peer_email=attendee_email,
-            )
 
-    if attendee_email:
+    valid_attendee_emails: List[str] = []
+    attendee_email: Optional[str] = None
+    for attendee_email in attendee_emails:
         print(f"[joint] Detected attendee: {attendee_email}")
-        attendee_profile = await _load_attendee_profile(attendee_email)
-        if attendee_profile:
-            from firestore_client import get_calendar_tokens
-            tokens = await get_calendar_tokens(attendee_email)
-            if tokens:
-                attendee_sessions = _fetch_attendee_sessions(tokens)
-                print(f"[joint] Loaded {len(attendee_sessions)} sessions for {attendee_email}")
-                if is_joint_scheduling and attendee_sessions:
-                    await _save_shared_availability_snapshot(
-                        attendee_email,
-                        attendee_sessions,
-                        source="attendee_google_tokens",
-                        peer_email=requester_email,
-                    )
-            else:
-                if is_joint_scheduling:
-                    attendee_sessions = await _load_shared_availability_snapshot(attendee_email)
-                    if attendee_sessions:
-                        print(
-                            f"[joint] No calendar tokens for {attendee_email}; "
-                            f"using shared snapshot ({len(attendee_sessions)} sessions)"
-                        )
-                    else:
-                        print(f"[joint] No calendar tokens/snapshot for {attendee_email} — using profile only")
-                else:
-                    print(f"[joint] No calendar tokens for {attendee_email} — using profile only")
-        else:
+        profile = await _load_attendee_profile(attendee_email)
+        if not profile:
             print(f"[joint] {attendee_email} is not a CalCoach user — ignoring mention")
-            attendee_email = None
+            continue
+        valid_attendee_emails.append(attendee_email)
+        if attendee_profile is None:
+            attendee_profile = profile
+        from firestore_client import get_calendar_tokens
+        tokens = await get_calendar_tokens(attendee_email)
+        if tokens:
+            sessions_for_attendee = _fetch_attendee_sessions(tokens)
+            print(f"[joint] Loaded {len(sessions_for_attendee)} sessions for {attendee_email}")
+            attendee_sessions.extend(sessions_for_attendee)
+            if is_joint_scheduling and sessions_for_attendee:
+                await _save_shared_availability_snapshot(
+                    attendee_email,
+                    sessions_for_attendee,
+                    source="attendee_google_tokens",
+                    peer_email=requester_email,
+                )
+        else:
+            if is_joint_scheduling:
+                snapshot = await _load_shared_availability_snapshot(attendee_email)
+                if snapshot:
+                    print(f"[joint] No calendar tokens for {attendee_email}; using shared snapshot ({len(snapshot)} sessions)")
+                    attendee_sessions.extend(snapshot)
+                else:
+                    print(f"[joint] No calendar tokens/snapshot for {attendee_email} — using profile only")
+            else:
+                print(f"[joint] No calendar tokens for {attendee_email} — using profile only")
 
-    # Combined sessions = requesting user + attendee (used for clash detection + LLM prompt)
+    # Combined sessions = requesting user + all attendees (used for clash detection + LLM prompt)
     combined_sessions = requester_sessions + attendee_sessions
 
     history = list(body.history)
@@ -1910,16 +1951,16 @@ async def chat(body: ChatMessage):
         body.reflections,
         user_ai_summary=requester_ai_summary,
     )
-    if attendee_email and attendee_sessions:
-        # Only hint the LLM when we actually have the attendee's calendar data merged in
-        system_prompt += f"\n\nNOTE: This is a joint scheduling request with {attendee_email}. Their busy blocks are already included above — all proposed slots must fit within the free windows shown."
+    if valid_attendee_emails and attendee_sessions:
+        names = ", ".join(valid_attendee_emails)
+        system_prompt += f"\n\nNOTE: This is a joint scheduling request with {names}. Their busy blocks are already included above — all proposed slots must fit within the free windows shown."
     messages = [{"role": "system", "content": system_prompt}]
     for h in history:
         messages.append({"role": h.role if h.role != "system" else "user", "content": h.text})
     messages.append({"role": "user", "content": body.message})
 
     completion = await client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
         messages=messages,
         response_format={"type": "json_object"},
     )
@@ -1958,7 +1999,7 @@ async def chat(body: ChatMessage):
                     if len(ranked_bundles) < TARGET_VIABLE_SUGGESTIONS:
                         reply = (
                             f"{reply}\n\n_Note: Only {len(ranked_bundles)} clash-free option(s) fit "
-                            + ("both calendars" if attendee_email else "your calendar")
+                            + ("all calendars" if valid_attendee_emails else "your calendar")
                             + " after validation._"
                         )
                 except Exception as repair_err:
