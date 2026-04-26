@@ -1,6 +1,3 @@
-import hashlib
-import base64
-import secrets
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from google_auth_oauthlib.flow import Flow
@@ -38,19 +35,11 @@ def login(request: Request, email: str = ""):
         scopes=SCOPES,
         redirect_uri=REDIRECT_URI,
     )
-    code_verifier = secrets.token_urlsafe(96)
-    code_challenge = base64.urlsafe_b64encode(
-        hashlib.sha256(code_verifier.encode()).digest()
-    ).rstrip(b"=").decode()
-
     auth_url, state = flow.authorization_url(
         access_type="offline",
         prompt="consent",
-        code_challenge=code_challenge,
-        code_challenge_method="S256",
     )
     request.session["oauth_state"] = state
-    request.session["code_verifier"] = code_verifier
     return RedirectResponse(auth_url)
 
 
@@ -65,7 +54,7 @@ def callback(request: Request, code: str, state: str):
         redirect_uri=REDIRECT_URI,
         state=state,
     )
-    flow.fetch_token(code=code, code_verifier=request.session.get("code_verifier"))
+    flow.fetch_token(code=code)
     creds = flow.credentials
 
     tokens = {

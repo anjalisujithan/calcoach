@@ -64,8 +64,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signInWithGoogle = async () => {
     const provider = new GoogleAuthProvider();
-    const { user: googleUser } = await signInWithPopup(auth, provider);
-    await registerInFirestore(googleUser);
+
+    provider.addScope("https://www.googleapis.com/auth/calendar");
+
+    const result = await signInWithPopup(auth, provider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    const accessToken = credential?.accessToken;
+
+    await registerInFirestore(result.user);
+
+    if (accessToken) {
+      await fetch(`${CALENDAR_API}/auth/google-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          access_token: accessToken,
+          email: result.user.email,
+        }),
+      });
+    }
   };
 
   const signOut = async () => {
