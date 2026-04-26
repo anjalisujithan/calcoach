@@ -363,7 +363,7 @@ class UserOut(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 async def _update_user_summary(user_id: str) -> None:
-    """Regenerate and persist the AI user summary for *user_id* (Firebase UID).
+    """Regenerate and persist the AI user summary for *user_id* (email).
 
     Fetches the user's reflections, calls Groq for a fresh summary, and merges
     it into the corresponding Firestore user document.  Failures are logged but

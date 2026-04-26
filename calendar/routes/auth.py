@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from google_auth_oauthlib.flow import Flow
-from firestore_client import save_calendar_tokens, save_shared_availability_snapshot
+from firestore_client import save_calendar_tokens, save_shared_availability_snapshot, save_oauth_state, get_and_delete_oauth_state
 from services.google_calendar import get_calendar_service
 
 import os
@@ -28,8 +28,6 @@ router = APIRouter(prefix="/auth")
 
 @router.get("/login")
 def login(request: Request, email: str = ""):
-    if email:
-        request.session["user_email"] = email.strip().lower()
     flow = Flow.from_client_secrets_file(
         _get_client_secrets_file(),
         scopes=SCOPES,
@@ -39,13 +37,14 @@ def login(request: Request, email: str = ""):
         access_type="offline",
         prompt="consent",
     )
-    request.session["oauth_state"] = state
+    save_oauth_state(state, email.strip().lower())
     return RedirectResponse(auth_url)
 
 
 @router.get("/callback")
 def callback(request: Request, code: str, state: str):
-    if state != request.session.get("oauth_state"):
+    email = get_and_delete_oauth_state(state)
+    if email is None:
         return JSONResponse({"error": "State mismatch — possible CSRF"}, status_code=400)
 
     flow = Flow.from_client_secrets_file(
@@ -65,9 +64,7 @@ def callback(request: Request, code: str, state: str):
         "client_secret": creds.client_secret,
         "scopes": list(creds.scopes or SCOPES),
     }
-    request.session["tokens"] = tokens
 
-    email = request.session.get("user_email", "")
     if email:
         save_calendar_tokens(email, tokens)
         try:
@@ -90,7 +87,13 @@ def callback(request: Request, code: str, state: str):
 
 
 @router.get("/status")
-def status(request: Request):
+def status(request: Request, email: str = ""):
+    if email:
+        from firestore_client import get_calendar_tokens
+        tokens = get_calendar_tokens(email.strip().lower())
+        if tokens:
+            return {"authenticated": True, "has_refresh_token": bool(tokens.get("refresh_token"))}
+        return {"authenticated": False}
     tokens = request.session.get("tokens")
     if not tokens:
         return {"authenticated": False}

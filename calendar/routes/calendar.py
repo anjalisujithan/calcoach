@@ -2,8 +2,21 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Request, HTTPException, Query
 from pydantic import BaseModel
 from services.google_calendar import get_calendar_service
+from firestore_client import get_calendar_tokens
 
 router = APIRouter(prefix="/calendar")
+
+
+def _resolve_tokens(request: Request, email: str = "") -> dict:
+    """Resolve OAuth tokens: prefer Firestore lookup by email, fall back to session."""
+    if email:
+        tokens = get_calendar_tokens(email.strip().lower())
+        if tokens:
+            return tokens
+    tokens = request.session.get("tokens")
+    if not tokens:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return tokens
 
 
 class NewEvent(BaseModel):
@@ -24,31 +37,23 @@ class NewEvent(BaseModel):
 
 
 @router.get("/calendars")
-def list_calendars(request: Request):
-    tokens = request.session.get("tokens")
-    if not tokens:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+def list_calendars(request: Request, email: str = Query(default="")):
+    tokens = _resolve_tokens(request, email)
     service = get_calendar_service(tokens)
     return {"calendars": service.get_calendar_list()}
 
 
 @router.get("/events")
-def get_events(request: Request):
-    tokens = request.session.get("tokens")
-    if not tokens:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
+def get_events(request: Request, email: str = Query(default="")):
+    tokens = _resolve_tokens(request, email)
     service = get_calendar_service(tokens)
     events = service.list_upcoming_events()
     return {"events": events}
 
 
 @router.get("/busy")
-def get_busy(request: Request):
-    tokens = request.session.get("tokens")
-    if not tokens:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
+def get_busy(request: Request, email: str = Query(default="")):
+    tokens = _resolve_tokens(request, email)
     service = get_calendar_service(tokens)
     busy = service.get_busy_times()
     return {"busy": busy}
@@ -59,10 +64,9 @@ def get_event(
     request: Request,
     event_id: str,
     calendarId: str = Query(default="primary"),
+    email: str = Query(default=""),
 ):
-    tokens = request.session.get("tokens")
-    if not tokens:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+    tokens = _resolve_tokens(request, email)
     service = get_calendar_service(tokens)
     event = service.get_event(event_id, calendar_id=calendarId)
     if not event:
@@ -75,20 +79,17 @@ def delete_event(
     request: Request,
     event_id: str,
     calendarId: str = Query(default="primary"),
+    email: str = Query(default=""),
 ):
-    tokens = request.session.get("tokens")
-    if not tokens:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+    tokens = _resolve_tokens(request, email)
     service = get_calendar_service(tokens)
     service.delete_event(event_id, calendar_id=calendarId)
     return {"ok": True}
 
 
 @router.patch("/events/{event_id}")
-def update_event(request: Request, event_id: str, body: NewEvent):
-    tokens = request.session.get("tokens")
-    if not tokens:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+def update_event(request: Request, event_id: str, body: NewEvent, email: str = Query(default="")):
+    tokens = _resolve_tokens(request, email)
 
     year, month, day = (int(p) for p in body.date.split("-"))
     start_dt = datetime(year, month, day, body.startHour, body.startMin)
@@ -113,10 +114,8 @@ def update_event(request: Request, event_id: str, body: NewEvent):
 
 
 @router.post("/events")
-def create_event(request: Request, body: NewEvent):
-    tokens = request.session.get("tokens")
-    if not tokens:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+def create_event(request: Request, body: NewEvent, email: str = Query(default="")):
+    tokens = _resolve_tokens(request, email)
 
     year, month, day = (int(p) for p in body.date.split("-"))
     start_dt = datetime(year, month, day, body.startHour, body.startMin)

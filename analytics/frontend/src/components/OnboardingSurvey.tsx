@@ -72,8 +72,9 @@ export default function OnboardingSurvey({ onComplete }: Props) {
         body: JSON.stringify({ ...answers, email: user?.email ?? '' }),
       });
     } catch { /* non-critical */ }
-    localStorage.setItem('calcoach_survey_done', 'true');
-    localStorage.setItem('calcoach_survey_answers', JSON.stringify(answers));
+    const userKey = user?.email ?? 'anon';
+    localStorage.setItem(`calcoach_survey_done_${userKey}`, 'true');
+    localStorage.setItem(`calcoach_survey_answers_${userKey}`, JSON.stringify(answers));
     onComplete(answers);
     setSubmitting(false);
   }

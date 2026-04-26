@@ -144,16 +144,18 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   const selectedSession = sessions.find(s => s.id === selectedSessionId) ?? null;
 
   useEffect(() => {
-    fetch(`${CALENDAR_API}/auth/status`, { credentials: 'include' })
+    const q = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
+    fetch(`${CALENDAR_API}/auth/status${q}`, { credentials: 'include' })
       .then(r => r.json())
       .then(data => setAuthenticated(data.authenticated))
       .catch(() => setAuthenticated(false));
-  }, []);
+  }, [userEmail]);
 
   async function fetchEvents() {
     setRefreshing(true);
+    const emailQ = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
     try {
-      const res = await fetch(`${CALENDAR_API}/calendar/events`, { credentials: 'include' });
+      const res = await fetch(`${CALENDAR_API}/calendar/events${emailQ}`, { credentials: 'include' });
       const data = await res.json();
       const gcalSessions = (data.events ?? [])
         .map(googleEventToSession)
@@ -164,7 +166,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
       const pushed: Session[] = [];
       for (const s of orphaned) {
         try {
-          const r = await fetch(`${CALENDAR_API}/calendar/events`, {
+          const r = await fetch(`${CALENDAR_API}/calendar/events${emailQ}`, {
             method: 'POST',
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
@@ -196,8 +198,9 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   async function handleEditSession(id: string, s: Omit<Session, 'id'>) {
     setSessions(prev => prev.map(existing => existing.id === id ? { ...s, id } : existing));
     if (!authenticated) return;
+    const emailQ = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
     try {
-      await fetch(`${CALENDAR_API}/calendar/events/${id}`, {
+      await fetch(`${CALENDAR_API}/calendar/events/${id}${emailQ}`, {
         method: 'PATCH',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -217,8 +220,9 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
       setSessions(prev => [...prev, { ...s, id }]);
       return;
     }
+    const emailQ = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
     try {
-      const res = await fetch(`${CALENDAR_API}/calendar/events`, {
+      const res = await fetch(`${CALENDAR_API}/calendar/events${emailQ}`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -238,9 +242,10 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
 
   async function handleDeleteSession(id: string) {
     if (authenticated) {
+      const emailQ = userEmail ? `&email=${encodeURIComponent(userEmail)}` : '';
       try {
         const calId = sessions.find(s => s.id === id)?.calendarId ?? 'primary';
-        await fetch(`${CALENDAR_API}/calendar/events/${id}?calendarId=${encodeURIComponent(calId)}`, {
+        await fetch(`${CALENDAR_API}/calendar/events/${id}?calendarId=${encodeURIComponent(calId)}${emailQ}`, {
           method: 'DELETE',
           credentials: 'include',
         });
@@ -251,8 +256,9 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   }
 
   async function handleDeleteSeriesSession(recurringEventId: string) {
+    const emailQ = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
     try {
-      await fetch(`${CALENDAR_API}/calendar/events/${recurringEventId}`, {
+      await fetch(`${CALENDAR_API}/calendar/events/${recurringEventId}${emailQ}`, {
         method: 'DELETE',
         credentials: 'include',
       });
@@ -431,10 +437,11 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
 
     const newRows: Session[] = [];
     if (info?.events?.length) {
+      const emailQ = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
       for (const e of info.events) {
         if (authenticated) {
           try {
-            const res = await fetch(`${CALENDAR_API}/calendar/events`, {
+            const res = await fetch(`${CALENDAR_API}/calendar/events${emailQ}`, {
               method: 'POST',
               credentials: 'include',
               headers: { 'Content-Type': 'application/json' },

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Session, LocationType, CalendarMeta, AddressSearch, detectLocationType, getDefaultTimezone, TIMEZONES } from './WeekCalendar';
 import { ReflectionEntry } from './ReflectionPanel';
+import { useAuth } from '../AuthContext';
 
 const FACES = [
   { score: 1, emoji: '😞', label: 'Not productive' },
@@ -291,6 +292,7 @@ interface Props {
 }
 
 export default function EventModal({ session, reflections, categories = [], onAddCategory, onDeleteCategory, calendars = [], onClose, onSave, onDelete, onDeleteSeries, onSaveReflection }: Props) {
+  const { user } = useAuth();
   const isNew = session.id === '__new__';
   const initStart = toTimeStr(session.startHour, session.startMin);
   const initEnd = addMinsStr(initStart, session.durationMins);
@@ -326,8 +328,9 @@ export default function EventModal({ session, reflections, categories = [], onAd
   // Fetch base event's recurrence rule when this is a recurring instance (instances don't carry the RRULE)
   useEffect(() => {
     if (!session.recurringEventId || (session.recurrence && session.recurrence.length > 0)) return;
+    const emailQ = user?.email ? `&email=${encodeURIComponent(user.email)}` : '';
     fetch(
-      `${process.env.REACT_APP_CALENDAR_API ?? 'http://localhost:8000'}/calendar/events/${session.recurringEventId}?calendarId=${encodeURIComponent(session.calendarId ?? 'primary')}`,
+      `${process.env.REACT_APP_CALENDAR_API ?? 'http://localhost:8000'}/calendar/events/${session.recurringEventId}?calendarId=${encodeURIComponent(session.calendarId ?? 'primary')}${emailQ}`,
       { credentials: 'include' },
     )
       .then(r => (r.ok ? r.json() : null))
