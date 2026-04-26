@@ -99,6 +99,7 @@ app.add_middleware(
 )
 
 COLLECTION = "reflections"
+LOCAL_SESSIONS_COLLECTION = "local_users"
 USERS_COLLECTION = "users"
 SHARED_AVAILABILITY_COLLECTION = "shared_availability"
 SHARED_INVITES_COLLECTION = "shared_event_invites"
@@ -514,6 +515,39 @@ async def delete_reflection(reflection_id: str):
     if not doc.exists:
         raise HTTPException(404, "Reflection not found")
     await doc_ref.delete()
+    return {"ok": True}
+
+
+@app.get("/sessions")
+async def get_local_sessions(user_id: str):
+    db = get_db()
+    doc = await db.collection(LOCAL_SESSIONS_COLLECTION).document(user_id).get()
+    if not doc.exists:
+        return {"sessions": [], "local_ids": [], "categories": None}
+    data = doc.to_dict() or {}
+    return {
+        "sessions": data.get("sessions", []),
+        "local_ids": data.get("local_ids", []),
+        "categories": data.get("categories"),
+    }
+
+
+@app.put("/sessions", status_code=200)
+async def put_local_sessions(body: dict):
+    user_id = body.get("user_id", "")
+    if not user_id:
+        raise HTTPException(400, "user_id required")
+    db = get_db()
+    update_data: dict = {
+        "user_id": user_id,
+        "updated_at": datetime.now(timezone.utc).isoformat() + "Z",
+    }
+    if "sessions" in body:
+        update_data["sessions"] = body.get("sessions", [])
+        update_data["local_ids"] = body.get("local_ids", [])
+    if "categories" in body:
+        update_data["categories"] = body.get("categories", [])
+    await db.collection(LOCAL_SESSIONS_COLLECTION).document(user_id).set(update_data, merge=True)
     return {"ok": True}
 
 

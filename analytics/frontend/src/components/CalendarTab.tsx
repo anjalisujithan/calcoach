@@ -15,7 +15,7 @@ function getInitialMessages(): Message[] {
     {
       id: mkId(),
       role: 'assistant',
-      text: "Hi! I'm CalCoach. Share your tasks and goals and I'll help generate an optimized schedule for your week or answer your questions!",
+      text: "Hi! I'm CalCoach. Share your tasks and goals and I'll help generate an optimized schedule for your week! Type @[email] to schedule meetings with others :)",
     },
   ];
 }
@@ -91,14 +91,6 @@ interface Props {
 
 const DEFAULT_CATEGORIES = ['Work', 'Research', 'Classes', 'Personal'];
 
-function loadCategories(): string[] {
-  try {
-    const stored = localStorage.getItem('calcoach_categories');
-    if (stored) return JSON.parse(stored);
-  } catch { /* ignore */ }
-  return DEFAULT_CATEGORIES;
-}
-
 export default function CalendarTab({ reflections, onSaveReflection, onSessionsChange, userEmail }: Props) {
   const [messages, setMessages] = useState<Message[]>(getInitialMessages());
   const [chatHistory, setChatHistory] = useState<{ role: string; text: string }[]>([]);
@@ -108,24 +100,18 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   const [sessions, setSessions] = useState<Session[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  const [categories, setCategories] = useState<string[]>(loadCategories);
+  const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
   const [newEventDraft, setNewEventDraft] = useState<{ date: string; startHour: number; startMin: number; durationMins: number } | null>(null);
 
   function handleAddCategory(cat: string) {
     setCategories(prev => {
       if (prev.includes(cat)) return prev;
-      const next = [...prev, cat];
-      localStorage.setItem('calcoach_categories', JSON.stringify(next));
-      return next;
+      return [...prev, cat];
     });
   }
 
   function handleDeleteCategory(cat: string) {
-    setCategories(prev => {
-      const next = prev.filter(c => c !== cat);
-      localStorage.setItem('calcoach_categories', JSON.stringify(next));
-      return next;
-    });
+    setCategories(prev => prev.filter(c => c !== cat));
   }
 
   useEffect(() => { onSessionsChange?.(sessions); }, [sessions, onSessionsChange]);
@@ -148,11 +134,28 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
     setSessions([]);
     localIds.current.clear();
     setAuthenticated(null);
-    const q = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
-    fetch(`${CALENDAR_API}/auth/status${q}`, { credentials: 'include' })
+    setCategories(DEFAULT_CATEGORIES);
+    if (!userEmail) return;
+    const q = `?email=${encodeURIComponent(userEmail)}`;
+    // Load local sessions first, then check GCal auth — this ensures localIds is populated
+    // before fetchEvents runs, so orphaned local events get pushed when GCal connects.
+    fetch(`${ANALYTICS_API}/sessions?user_id=${encodeURIComponent(userEmail)}`)
       .then(r => r.json())
-      .then(data => setAuthenticated(data.authenticated))
-      .catch(() => setAuthenticated(false));
+      .then(data => {
+        const stored: Session[] = data.sessions ?? [];
+        const savedLocalIds: string[] = data.local_ids ?? [];
+        const storedCategories: string[] | null = data.categories ?? null;
+        savedLocalIds.forEach(id => localIds.current.add(id));
+        if (stored.length > 0) setSessions(stored);
+        if (storedCategories && storedCategories.length > 0) setCategories(storedCategories);
+      })
+      .catch(() => {})
+      .finally(() => {
+        fetch(`${CALENDAR_API}/auth/status${q}`, { credentials: 'include' })
+          .then(r => r.json())
+          .then(data => setAuthenticated(data.authenticated))
+          .catch(() => setAuthenticated(false));
+      });
   }, [userEmail]);
 
   async function fetchEvents() {
@@ -198,6 +201,29 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
     fetchEvents();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authenticated]);
+
+  // Persist local sessions + categories to Firestore when not using GCal
+  useEffect(() => {
+    if (authenticated !== false || !userEmail) return;
+    const nonPending = sessions.filter(s => !s.pending);
+    fetch(`${ANALYTICS_API}/sessions`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userEmail, sessions: nonPending, local_ids: Array.from(localIds.current), categories }),
+    }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessions, authenticated, userEmail, categories]);
+
+  // Persist categories to Firestore when using GCal (sessions live in GCal, not Firestore)
+  useEffect(() => {
+    if (authenticated !== true || !userEmail) return;
+    fetch(`${ANALYTICS_API}/sessions`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userEmail, categories }),
+    }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categories, authenticated, userEmail]);
 
   async function handleEditSession(id: string, s: Omit<Session, 'id'>) {
     setSessions(prev => prev.map(existing => existing.id === id ? { ...s, id } : existing));
@@ -319,6 +345,18 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
       if (!activeAttendeeEmails.current.includes(e)) activeAttendeeEmails.current.push(e);
     }
     setMessages(m => [...m, userMsg]);
+
+    const mentionedInMessage: string[] = [];
+    const atRe3 = /@([\w.+\-]+@[\w.\-]+\.\w{2,})/g;
+    let m3; while ((m3 = atRe3.exec(text)) !== null) mentionedInMessage.push(m3[1]);
+    if (!authenticated && mentionedInMessage.length > 0) {
+      setMessages(m => [...m, {
+        id: mkId(),
+        role: 'assistant',
+        text: 'Joint scheduling requires Google Calendar. Connect your calendar using the "Connect Google Calendar" button above to schedule with others.',
+      }]);
+      return;
+    }
 
     const controller = new AbortController();
     inFlightController.current = controller;
