@@ -28,6 +28,14 @@ _app: firebase_admin.App | None = None
 
 def _init_app() -> firebase_admin.App:
     """Initialize Firebase Admin SDK exactly once."""
+    import json
+
+    # Inline JSON via env var — preferred for Railway/Render where file paths don't work
+    inline_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
+    if inline_json:
+        cred = credentials.Certificate(json.loads(inline_json))
+        return firebase_admin.initialize_app(cred)
+
     # Explicit service-account key file path
     key_path = os.environ.get("FIREBASE_SERVICE_ACCOUNT_PATH") or os.environ.get(
         "GOOGLE_APPLICATION_CREDENTIALS"

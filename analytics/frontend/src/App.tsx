@@ -13,7 +13,7 @@ type Tab = 'calendar' | 'analytics' | 'preferences';
 
 const mkId = () => crypto.randomUUID();
 
-const API = 'http://localhost:8001';
+const API = import.meta.env.VITE_ANALYTICS_API ?? 'http://localhost:8001';
 
 function AppShell() {
   const { user, loading, signOut } = useAuth();
