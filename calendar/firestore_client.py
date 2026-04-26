@@ -94,6 +94,34 @@ def save_shared_availability_snapshot(email: str, sessions: list[dict]) -> None:
         print(f"[calendar] Failed to save shared snapshot for {owner_email}: {e}")
 
 
+def save_oauth_state(state: str, email: str) -> None:
+    """Store OAuth state in Firestore so it survives across any redirect."""
+    try:
+        db = _get_db()
+        db.collection("oauth_states").document(state).set({
+            "email": email,
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        })
+    except Exception as e:
+        print(f"[calendar] Failed to save oauth state: {e}")
+
+
+def get_and_delete_oauth_state(state: str) -> str | None:
+    """Fetch the email for a given OAuth state and delete it (one-time use)."""
+    try:
+        db = _get_db()
+        ref = db.collection("oauth_states").document(state)
+        doc = ref.get()
+        if not doc.exists:
+            return None
+        email = (doc.to_dict() or {}).get("email", "")
+        ref.delete()
+        return email or None
+    except Exception as e:
+        print(f"[calendar] Failed to get oauth state: {e}")
+        return None
+
+
 def get_shared_availability_sessions(email: str) -> list[dict]:
     """Fetch stored snapshot sessions for a user."""
     owner_email = (email or "").strip().lower()
