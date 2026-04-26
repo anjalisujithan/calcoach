@@ -10,8 +10,8 @@ import {
 } from 'firebase/auth';
 import { auth } from './firebase';
 
-const API = import.meta.env.VITE_ANALYTICS_API ?? 'http://localhost:8001';
-const CALENDAR_API = import.meta.env.VITE_CALENDAR_API ?? 'http://localhost:8000';
+const API = process.env.REACT_APP_ANALYTICS_API ?? 'http://localhost:8001';
+const CALENDAR_API = process.env.REACT_APP_CALENDAR_API ?? 'http://localhost:8000';
 
 interface AuthContextType {
   user: User | null;
