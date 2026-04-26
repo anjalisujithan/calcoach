@@ -1380,7 +1380,7 @@ def _task_from_bundle_for_validation(bundle: dict, cand: CandidateSchedule) -> T
         task_type="other",
         deadline_day=deadline_day,
         preferred_chunk_minutes=max_chunk,
-        min_chunk_minutes=20,
+        min_chunk_minutes=min(20, max_chunk),
         max_chunk_minutes=max(max_chunk, 120),
     )
 

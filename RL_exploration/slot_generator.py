@@ -160,6 +160,7 @@ class ScheduleValidator:
         block: Block,
         free_windows: Dict[str, List[Tuple[time, time]]],
         deadline_day: str,
+        min_chunk_minutes: int = MIN_VIABLE_CHUNK_MINUTES,
     ) -> Tuple[bool, str]:
         """
         Check whether a single Block satisfies all hard constraints.
@@ -178,8 +179,8 @@ class ScheduleValidator:
         if DAY_ORDER.index(block.day) > deadline_idx:
             return False, f"{block.day} is after deadline {deadline_day}"
 
-        if block.duration_minutes < MIN_VIABLE_CHUNK_MINUTES:
-            return False, f"Block duration {block.duration_minutes}min < minimum {MIN_VIABLE_CHUNK_MINUTES}min"
+        if block.duration_minutes < min_chunk_minutes:
+            return False, f"Block duration {block.duration_minutes}min < minimum {min_chunk_minutes}min"
 
         day_windows = free_windows.get(block.day, [])
         for w_start, w_end in day_windows:
@@ -210,7 +211,7 @@ class ScheduleValidator:
             return False, "Candidate has no blocks"
 
         for block in candidate.blocks:
-            ok, reason = self.validate_block(block, free_windows, task.deadline_day)
+            ok, reason = self.validate_block(block, free_windows, task.deadline_day, task.min_chunk_minutes)
             if not ok:
                 return False, reason
 
