@@ -94,29 +94,33 @@ def save_shared_availability_snapshot(email: str, sessions: list[dict]) -> None:
         print(f"[calendar] Failed to save shared snapshot for {owner_email}: {e}")
 
 
-def save_oauth_state(state: str, email: str) -> None:
-    """Store OAuth state in Firestore so it survives across any redirect."""
+def save_oauth_state(state: str, email: str, code_verifier: str = "") -> None:
+    """Store OAuth state + PKCE code_verifier in Firestore so they survive any redirect."""
     try:
         db = _get_db()
         db.collection("oauth_states").document(state).set({
             "email": email,
+            "code_verifier": code_verifier,
             "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         })
     except Exception as e:
         print(f"[calendar] Failed to save oauth state: {e}")
 
 
-def get_and_delete_oauth_state(state: str) -> str | None:
-    """Fetch the email for a given OAuth state and delete it (one-time use)."""
+def get_and_delete_oauth_state(state: str) -> tuple[str, str] | None:
+    """Fetch (email, code_verifier) for a given OAuth state and delete it (one-time use).
+    Returns None if the state is not found."""
     try:
         db = _get_db()
         ref = db.collection("oauth_states").document(state)
         doc = ref.get()
         if not doc.exists:
             return None
-        email = (doc.to_dict() or {}).get("email", "")
+        data = doc.to_dict() or {}
+        email = data.get("email", "")
+        code_verifier = data.get("code_verifier", "")
         ref.delete()
-        return email or None
+        return (email, code_verifier)
     except Exception as e:
         print(f"[calendar] Failed to get oauth state: {e}")
         return None

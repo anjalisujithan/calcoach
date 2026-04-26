@@ -6,6 +6,9 @@ from services.google_calendar import get_calendar_service
 
 import os
 import tempfile
+import secrets
+import hashlib
+import base64
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/callback")
@@ -26,8 +29,17 @@ def _get_client_secrets_file() -> str:
 router = APIRouter(prefix="/auth")
 
 
+def _make_pkce_pair() -> tuple[str, str]:
+    code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+    return code_verifier, code_challenge
+
+
 @router.get("/login")
 def login(request: Request, email: str = ""):
+    code_verifier, code_challenge = _make_pkce_pair()
     flow = Flow.from_client_secrets_file(
         _get_client_secrets_file(),
         scopes=SCOPES,
@@ -36,16 +48,19 @@ def login(request: Request, email: str = ""):
     auth_url, state = flow.authorization_url(
         access_type="offline",
         prompt="consent",
+        code_challenge=code_challenge,
+        code_challenge_method="S256",
     )
-    save_oauth_state(state, email.strip().lower())
+    save_oauth_state(state, email.strip().lower(), code_verifier)
     return RedirectResponse(auth_url)
 
 
 @router.get("/callback")
 def callback(request: Request, code: str, state: str):
-    email = get_and_delete_oauth_state(state)
-    if email is None:
+    result = get_and_delete_oauth_state(state)
+    if result is None:
         return JSONResponse({"error": "State mismatch — possible CSRF"}, status_code=400)
+    email, code_verifier = result
 
     flow = Flow.from_client_secrets_file(
         _get_client_secrets_file(),
@@ -53,7 +68,7 @@ def callback(request: Request, code: str, state: str):
         redirect_uri=REDIRECT_URI,
         state=state,
     )
-    flow.fetch_token(code=code)
+    flow.fetch_token(code=code, code_verifier=code_verifier)
     creds = flow.credentials
 
     tokens = {
