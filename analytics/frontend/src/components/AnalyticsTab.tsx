@@ -674,7 +674,7 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub?: s
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-const API = import.meta.env.VITE_ANALYTICS_API ?? 'http://localhost:8001';
+const API = process.env.REACT_APP_ANALYTICS_API ?? 'http://localhost:8001';
 
 export default function AnalyticsTab({ reflections, sessions = [], userEmail }: { reflections: ReflectionEntry[]; sessions?: CalSession[]; userEmail?: string }) {
   // Use local reflections (in-session) merged with any loaded from Firestore

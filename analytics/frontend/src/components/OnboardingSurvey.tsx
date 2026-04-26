@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAuth } from '../AuthContext';
 
-const ANALYTICS_API = import.meta.env.VITE_ANALYTICS_API ?? 'http://localhost:8001';
+const ANALYTICS_API = process.env.REACT_APP_ANALYTICS_API ?? 'http://localhost:8001';
 
 export interface SurveyAnswers {
   userType: string;          // 'college_student' | 'grad_student' | 'working_professional' | 'other'
