@@ -16,6 +16,13 @@ SHARED_AVAILABILITY_COLLECTION = "shared_availability"
 
 
 def _init_app() -> firebase_admin.App:
+    import json
+
+    inline_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
+    if inline_json:
+        cred = credentials.Certificate(json.loads(inline_json))
+        return firebase_admin.initialize_app(cred, name="calendar")
+
     key_path = os.environ.get("FIREBASE_SERVICE_ACCOUNT_PATH") or os.environ.get(
         "GOOGLE_APPLICATION_CREDENTIALS"
     )

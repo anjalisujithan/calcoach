@@ -7,9 +7,24 @@ from google_auth_oauthlib.flow import Flow
 from firestore_client import save_calendar_tokens, save_shared_availability_snapshot
 from services.google_calendar import get_calendar_service
 
+import os
+import tempfile
+
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
-CLIENT_SECRETS_FILE = "client_secret_372533672163-9usane5tl6oqvv04n26vo6arsc61igpp.apps.googleusercontent.com.json"
-REDIRECT_URI = "http://localhost:8000/auth/callback"
+REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/callback")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
+def _get_client_secrets_file() -> str:
+    """Return path to client secrets JSON. Supports inline JSON via env var for prod."""
+    inline = os.getenv("GOOGLE_CLIENT_SECRETS_JSON")
+    if inline:
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        tmp.write(inline)
+        tmp.flush()
+        return tmp.name
+    path = os.getenv("GOOGLE_CLIENT_SECRETS_FILE",
+                     "client_secret_372533672163-9usane5tl6oqvv04n26vo6arsc61igpp.apps.googleusercontent.com.json")
+    return path
 
 router = APIRouter(prefix="/auth")
 
@@ -19,7 +34,7 @@ def login(request: Request, email: str = ""):
     if email:
         request.session["user_email"] = email.strip().lower()
     flow = Flow.from_client_secrets_file(
-        CLIENT_SECRETS_FILE,
+        _get_client_secrets_file(),
         scopes=SCOPES,
         redirect_uri=REDIRECT_URI,
     )
@@ -45,7 +60,7 @@ def callback(request: Request, code: str, state: str):
         return JSONResponse({"error": "State mismatch — possible CSRF"}, status_code=400)
 
     flow = Flow.from_client_secrets_file(
-        CLIENT_SECRETS_FILE,
+        _get_client_secrets_file(),
         scopes=SCOPES,
         redirect_uri=REDIRECT_URI,
         state=state,
@@ -82,7 +97,7 @@ def callback(request: Request, code: str, state: str):
         except Exception as e:
             print(f"[calendar] Failed to sync shared availability on login for {email}: {e}")
 
-    return RedirectResponse("http://localhost:3000")
+    return RedirectResponse(FRONTEND_URL)
 
 
 @router.get("/status")

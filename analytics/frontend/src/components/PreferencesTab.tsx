@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { SurveyAnswers } from './OnboardingSurvey';
 
-const API = 'http://localhost:8001';
+const API = import.meta.env.VITE_ANALYTICS_API ?? 'http://localhost:8001';
 
 const DEFAULT_ANSWERS: SurveyAnswers = {
   userType: '',

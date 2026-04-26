@@ -327,7 +327,7 @@ export default function EventModal({ session, reflections, categories = [], onAd
   useEffect(() => {
     if (!session.recurringEventId || (session.recurrence && session.recurrence.length > 0)) return;
     fetch(
-      `http://localhost:8000/calendar/events/${session.recurringEventId}?calendarId=${encodeURIComponent(session.calendarId ?? 'primary')}`,
+      `${import.meta.env.VITE_CALENDAR_API ?? 'http://localhost:8000'}/calendar/events/${session.recurringEventId}?calendarId=${encodeURIComponent(session.calendarId ?? 'primary')}`,
       { credentials: 'include' },
     )
       .then(r => (r.ok ? r.json() : null))
