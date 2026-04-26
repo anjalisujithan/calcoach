@@ -398,6 +398,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
         const isMultiTask = data.multi_task ?? false;
         const attendeeEmails = [...activeAttendeeEmails.current];
         const TASK_COLORS = ['#4285f4', '#0f9d58', '#f4b400', '#db4437', '#ab47bc', '#00acc1'];
+        const OPTION_COLORS = ['#4285f4', '#0f9d58', '#f4b400', '#db4437', '#ab47bc', '#00acc1'];
 
         const toAdd: Session[] = [];
         for (const suggestion of suggestions) {
@@ -408,7 +409,9 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           const taskIndex: number = suggestion.task_index ?? 0;
           const groupId = mkId();
           pendingSlotMap.current.set(groupId, { slotIndex: suggestion.rank - 1, events, attendeeEmails, isMultiTask, taskIndex });
-          const blockColor = isMultiTask ? TASK_COLORS[taskIndex % TASK_COLORS.length] : '#4285f4';
+          const blockColor = isMultiTask
+            ? TASK_COLORS[taskIndex % TASK_COLORS.length]
+            : OPTION_COLORS[(suggestion.rank - 1) % OPTION_COLORS.length];
           const taskLabel = isMultiTask && suggestion.task_name ? `${suggestion.task_name} #${suggestion.rank}` : `#${suggestion.rank} ${events[0]?.title ?? ''}`;
 
           events.forEach((event: any, i: number) => {
@@ -427,6 +430,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
               pending: true,
               pendingGroupId: groupId,
               pendingShowActions: i === 0,
+              recurrence: event.recurrence ?? [],
             });
           });
         }
@@ -539,6 +543,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
               pending: true,
               pendingGroupId: groupId,
               pendingShowActions: i === 0,
+              recurrence: event.recurrence ?? [],
             });
           });
         }
@@ -588,7 +593,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
                 startHour: e.startHour,
                 startMin: e.startMin,
                 durationMins: e.durationMins,
-                recurrence: [],
+                recurrence: e.recurrence ?? [],
                 attendees: info.attendeeEmails?.length ? [userEmail, ...info.attendeeEmails].filter(Boolean) : [],
               }),
             });
@@ -603,7 +608,8 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
               startHour: e.startHour,
               startMin: e.startMin,
               durationMins: e.durationMins,
-              color: '#4285f4',
+              color: e.color ?? sessions.find(s => s.id === id)?.color ?? '#4285f4',
+              recurrence: e.recurrence ?? [],
             });
             continue;
           } catch { /* fall through to local */ }
@@ -619,7 +625,8 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           startHour: e.startHour,
           startMin: e.startMin,
           durationMins: e.durationMins,
-          color: '#4285f4',
+          color: e.color ?? sessions.find(s => s.id === id)?.color ?? '#4285f4',
+          recurrence: e.recurrence ?? [],
         });
       }
     }
@@ -640,11 +647,14 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
         return [...withoutThisTask, ...newRows];
       });
     } else {
-      pendingSlotMap.current.clear();
-      pendingSessionToGroup.current.clear();
+      // Single-task: allow mixing and matching options by only removing the accepted group.
+      pendingSlotMap.current.delete(groupId);
+      Array.from(pendingSessionToGroup.current.entries()).forEach(([sid, gid]) => {
+        if (gid === groupId) pendingSessionToGroup.current.delete(sid);
+      });
       setSessions(prev => {
-        const withoutPending = prev.filter(s => !s.pending);
-        return [...withoutPending, ...newRows];
+        const withoutAcceptedGroup = prev.filter(s => (s.pendingGroupId ?? s.id) !== groupId);
+        return [...withoutAcceptedGroup, ...newRows];
       });
     }
 
@@ -685,7 +695,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
                 startHour: e.startHour,
                 startMin: e.startMin,
                 durationMins: e.durationMins,
-                recurrence: [],
+                recurrence: e.recurrence ?? [],
                 attendees: info.attendeeEmails?.length ? [userEmail, ...info.attendeeEmails].filter(Boolean) : [],
               }),
             });
@@ -699,7 +709,8 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
               startHour: e.startHour,
               startMin: e.startMin,
               durationMins: e.durationMins,
-              color: '#4285f4',
+              color: e.color ?? '#4285f4',
+              recurrence: e.recurrence ?? [],
             });
             continue;
           } catch { /* fall through to local */ }
@@ -715,7 +726,8 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           startHour: e.startHour,
           startMin: e.startMin,
           durationMins: e.durationMins,
-          color: '#4285f4',
+          color: e.color ?? '#4285f4',
+          recurrence: e.recurrence ?? [],
         });
       }
     }

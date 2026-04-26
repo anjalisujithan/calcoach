@@ -73,6 +73,17 @@ _SCHED_INTENT_RE = re.compile(
     r"\b(schedule|add|book|create|set up|block out|find time for)\b",
     re.IGNORECASE,
 )
+_RECURRING_INTENT_RE = re.compile(
+    r"\b(every|weekly|daily|each week|per week|recurring|repeat)\b",
+    re.IGNORECASE,
+)
+_MONTH_TO_NUM = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+}
+_WEEKDAY_TO_NUM = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6,
+}
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -639,6 +650,118 @@ class InsightsRequest(BaseModel):
     user_email: Optional[str] = None  # email — matches the existing email-keyed user doc
 
 
+class InsightsChatTurn(BaseModel):
+    role: str
+    text: str
+
+
+class InsightsChatRequest(BaseModel):
+    message: str
+    history: List[InsightsChatTurn] = []
+    reflections: List[dict] = []
+    sessions: List[dict] = []
+    metrics: dict = {}
+    user_type: Optional[str] = None
+    user_email: Optional[str] = None
+
+
+def _safe_session_minutes(s: dict) -> int:
+    try:
+        return max(0, int(s.get("durationMins", 0)))
+    except Exception:
+        return 0
+
+
+def _compute_insights_metrics(reflections: List[dict], sessions: List[dict]) -> dict:
+    from collections import defaultdict
+    from datetime import date as _date_cls
+
+    total_calendar_mins = sum(_safe_session_minutes(s) for s in sessions)
+    total_reflection_mins = 0
+    productivity_vals: List[float] = []
+
+    by_hour: dict = defaultdict(list)
+    by_dow: dict = defaultdict(list)
+    by_subject: dict = defaultdict(lambda: {"totalMins": 0, "productivity": []})
+
+    for s in sessions:
+        title = (s.get("title") or "Unknown").strip() or "Unknown"
+        by_subject[title]["totalMins"] += _safe_session_minutes(s)
+
+    for r in reflections:
+        title = (r.get("title") or "Unknown").strip() or "Unknown"
+        prod = float(r.get("productivity", 0) or 0)
+        if prod > 0:
+            productivity_vals.append(prod)
+            by_subject[title]["productivity"].append(prod)
+        try:
+            sh, sm = map(int, str(r.get("startTime", "0:0")).split(":"))
+            eh, em = map(int, str(r.get("endTime", "0:0")).split(":"))
+            dur = max(0, eh * 60 + em - sh * 60 - sm)
+        except Exception:
+            dur = 0
+            sh = 0
+        total_reflection_mins += dur
+        by_subject[title]["totalMins"] += dur
+        if prod > 0:
+            by_hour[sh].append(prod)
+        try:
+            dow = _date_cls.fromisoformat(r["date"]).weekday()
+            if prod > 0:
+                by_dow[dow].append(prod)
+        except Exception:
+            pass
+
+    def _avg(vals: List[float]) -> float:
+        return round(sum(vals) / len(vals), 2) if vals else 0.0
+
+    top_subjects = []
+    for title, info in by_subject.items():
+        mins = int(info["totalMins"])
+        if mins <= 0:
+            continue
+        top_subjects.append({
+            "title": title,
+            "totalMins": mins,
+            "avgProductivity": _avg(info["productivity"]),
+            "hasReflection": len(info["productivity"]) > 0,
+        })
+    top_subjects.sort(key=lambda x: x["totalMins"], reverse=True)
+
+    best_hour = None
+    if by_hour:
+        best_h, best_vals = max(by_hour.items(), key=lambda kv: sum(kv[1]) / len(kv[1]))
+        best_hour = {"hour": int(best_h), "avgProductivity": _avg(best_vals), "count": len(best_vals)}
+
+    best_day = None
+    if by_dow:
+        best_d, best_vals = max(by_dow.items(), key=lambda kv: sum(kv[1]) / len(kv[1]))
+        best_day = {"weekday": int(best_d), "avgProductivity": _avg(best_vals), "count": len(best_vals)}
+
+    return {
+        "totalCalendarMinutes": total_calendar_mins,
+        "totalReflectionMinutes": total_reflection_mins,
+        "reflectionCount": len(reflections),
+        "sessionCount": len(sessions),
+        "avgProductivity": _avg(productivity_vals),
+        "bestHour": best_hour,
+        "bestWeekday": best_day,
+        "topSubjects": top_subjects[:10],
+    }
+
+
+async def _load_insights_data_for_user(user_email: str) -> Tuple[List[dict], List[dict]]:
+    email = (user_email or "").strip().lower()
+    if not email:
+        return [], []
+    db = get_db()
+    reflections = [doc.to_dict() async for doc in db.collection(COLLECTION).where("userId", "==", email).stream()]
+    sessions_doc = await db.collection(LOCAL_SESSIONS_COLLECTION).document(email).get()
+    sessions_data = sessions_doc.to_dict() if sessions_doc.exists else {}
+    sessions = sessions_data.get("sessions", []) if isinstance(sessions_data, dict) else []
+    return reflections, sessions if isinstance(sessions, list) else []
+
+
 def _build_insights_prompt(reflections: List[dict], sessions: List[dict], user_type: Optional[str]) -> str:
     from datetime import date as _date_cls
     from collections import defaultdict
@@ -855,6 +978,66 @@ async def get_insights(body: InsightsRequest):
     return {"feedback": feedback, "user_summary": user_summary_text}
 
 
+@app.post("/insights/chat")
+async def insights_chat(body: InsightsChatRequest):
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise HTTPException(500, "GROQ_API_KEY not set")
+
+    message = (body.message or "").strip()
+    if not message:
+        raise HTTPException(400, "message is required")
+
+    reflections = list(body.reflections)
+    sessions = list(body.sessions)
+    if body.user_email:
+        try:
+            db_reflections, db_sessions = await _load_insights_data_for_user(body.user_email)
+            if db_reflections:
+                reflections = db_reflections
+            if db_sessions:
+                sessions = db_sessions
+        except Exception as e:
+            print(f"[insights/chat] failed to load user data: {e}")
+
+    metrics = body.metrics if isinstance(body.metrics, dict) and body.metrics else _compute_insights_metrics(reflections, sessions)
+    base_prompt_full = _build_insights_prompt(reflections, sessions, body.user_type)
+    base_prompt = base_prompt_full.split("Respond with ONLY a JSON object", 1)[0].strip()
+    chat_system = (
+        "You are CalCoach's analytics copilot. Answer user questions about productivity trends using the full context below.\n"
+        "If data is missing, say exactly what is missing. Keep answers concise and actionable.\n"
+        "Use concrete references to subjects, days, and times when possible.\n\n"
+        f"{base_prompt}\n\n"
+        "PRECOMPUTED METRICS (JSON):\n"
+        f"{json.dumps(metrics, indent=2)}\n\n"
+        "When replying, return plain text only (no JSON)."
+    )
+
+    client = AsyncGroq(api_key=api_key)
+    msgs = [{"role": "system", "content": chat_system}]
+    for h in body.history[-12:]:
+        role = "assistant" if h.role == "assistant" else "user"
+        msgs.append({"role": role, "content": h.text})
+    msgs.append({"role": "user", "content": message})
+
+    try:
+        completion = await client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=msgs,
+            temperature=0.4,
+            max_tokens=500,
+        )
+        reply = (completion.choices[0].message.content or "").strip()
+    except Exception as e:
+        raise HTTPException(500, f"insights chat failed: {e}")
+
+    updated_history = body.history + [
+        InsightsChatTurn(role="user", text=message),
+        InsightsChatTurn(role="assistant", text=reply),
+    ]
+    return {"reply": reply, "updated_history": updated_history, "metrics": metrics}
+
+
 # ── Chat models ───────────────────────────────────────────────────────────────
 
 class CalendarEvent(BaseModel):
@@ -1036,7 +1219,8 @@ When filling "candidate_slots" (new scheduling request only):
 - Set "reply" to a brief sentence (e.g. "Here are 3 options for your CS homework:")
 - Provide exactly 3 alternative scheduling OPTIONS in "candidate_slots" — different strategies/days for the same task. The server validates against BUSY times: every block must lie entirely inside a FREE window (see follow-up messages if a revision is requested).
 - SINGLE continuous block per option: use top-level fields only: title, description, date (yyyy-MM-dd), startHour (0-23), startMin (0 or 30), durationMins, reasoning (1 sentence)
-- MULTI-BLOCK one option (e.g. 4 hours as four 1-hour sessions): ONE object with the same title/description/reasoning at the top level, plus a "blocks" array. Each block must have: date, startHour, startMin, durationMins (optional title/description override per block). Do NOT split one option into multiple top-level candidate_slots entries.
+- MULTI-BLOCK option format: ONE object with the same title/description/reasoning at the top level, plus a "blocks" array. Each block must have: date, startHour, startMin, durationMins (optional title/description override per block). Do NOT split one option into multiple top-level candidate_slots entries.
+- IMPORTANT CHUNKING GUIDANCE: for larger tasks (roughly >= 3 hours total), strongly prefer splitting EACH of the 3 options into multiple blocks spread across multiple days (for example, 3 blocks per option on different dates when availability allows) instead of a single marathon block.
 - DURATION RULE (hard): for every option, the sum of all blocks' durationMins MUST equal the total time the user asked to schedule. If the user asks for 2 hours, every option must total exactly 120 minutes. This is non-negotiable — never under- or over-schedule.
 - Leave "events_to_create" as an empty array
 
@@ -1076,6 +1260,7 @@ Only proceed with generating candidate_slots if:
 - Provide exactly 3 alternative scheduling OPTIONS in "candidate_slots"
 - SINGLE continuous block per option: title, description, date (yyyy-MM-dd), startHour (0-23), startMin (0 or 30), durationMins, reasoning (1 sentence), deadline_date (yyyy-MM-dd)
 - MULTI-BLOCK option (e.g. 10 hours split into 2-hour sessions): ONE object with title/description/reasoning/deadline_date at top level, plus a "blocks" array. Each block: date, startHour, startMin, durationMins. Do NOT use multiple top-level entries for one option.
+- For larger tasks (roughly >= 3 hours total), prefer multi-block options across multiple days, and make each of the 3 options meaningfully different while preserving the same total required duration.
 
 DEADLINE RULE (hard):
 - deadline_date is always the calendar date the task is due, regardless of time-of-day wording
@@ -1143,6 +1328,109 @@ async def _load_user_ai_summary(user_email: str) -> str:
 
 def _is_scheduling_request(message: str) -> bool:
     return bool(_SCHED_INTENT_RE.search(message or ""))
+
+
+def _is_recurring_request(message: str) -> bool:
+    txt = (message or "").lower()
+    return bool(_RECURRING_INTENT_RE.search(txt))
+
+
+def _infer_weekly_days_from_message(message: str) -> List[int]:
+    txt = (message or "").lower()
+    explicit = [n for name, n in _WEEKDAY_TO_NUM.items() if name in txt]
+    if explicit:
+        return sorted(set(explicit))
+    m = re.search(r"(\d+)\s*(?:x|times?)\s*(?:a|per)?\s*week", txt)
+    if not m:
+        return [0]
+    count = max(1, min(7, int(m.group(1))))
+    presets = {
+        1: [1], 2: [1, 4], 3: [1, 3, 5], 4: [1, 2, 4, 6],
+        5: [0, 1, 2, 3, 4], 6: [0, 1, 2, 3, 4, 6], 7: [0, 1, 2, 3, 4, 5, 6],
+    }
+    return presets.get(count, [0])
+
+
+def _infer_until_yyyymmdd(message: str, now_dt: datetime) -> Optional[str]:
+    txt = (message or "").lower()
+    # "until August 31" / "till august"
+    m = re.search(
+        r"(?:until|till|through)\s+(january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+(\d{1,2}))?",
+        txt,
+    )
+    if not m:
+        return None
+    month_num = _MONTH_TO_NUM[m.group(1)]
+    day = int(m.group(2)) if m.group(2) else 31
+    year = now_dt.year
+    try:
+        tentative = datetime(year=year, month=month_num, day=min(day, 28), tzinfo=now_dt.tzinfo)
+        if tentative.date() < now_dt.date():
+            year += 1
+        # choose last day if user omitted day
+        if not m.group(2):
+            import calendar as _cal
+            day = _cal.monthrange(year, month_num)[1]
+        return f"{year:04d}{month_num:02d}{day:02d}"
+    except Exception:
+        return None
+
+
+def _infer_time_and_duration(message: str) -> Tuple[int, int, int]:
+    txt = (message or "").lower()
+    # Duration like "45 min", "1 hour", "1.5 hours"
+    dur = 45
+    m_mins = re.search(r"(\d{1,3})\s*(?:min|mins|minutes)\b", txt)
+    m_hours = re.search(r"(\d+(?:\.\d+)?)\s*(?:hour|hours|hr|hrs)\b", txt)
+    if m_mins:
+        dur = max(15, min(240, int(m_mins.group(1))))
+    elif m_hours:
+        dur = max(15, min(240, int(float(m_hours.group(1)) * 60)))
+
+    # Time like "7am", "7:30 pm"
+    hour = 7
+    minute = 0
+    m_time = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", txt)
+    if m_time:
+        h = int(m_time.group(1)) % 12
+        minute = int(m_time.group(2) or 0)
+        if m_time.group(3) == "pm":
+            h += 12
+        hour = h
+    return hour, minute, dur
+
+
+def _next_date_for_weekday(start_date: datetime, target_weekday: int) -> str:
+    days_ahead = (target_weekday - start_date.weekday()) % 7
+    if days_ahead == 0:
+        days_ahead = 7
+    return (start_date + timedelta(days=days_ahead)).date().isoformat()
+
+
+def _fallback_recurring_event_from_message(message: str) -> Optional[dict]:
+    if not _is_recurring_request(message):
+        return None
+    now_dt = datetime.now(timezone.utc)
+    txt = (message or "").strip()
+    title_match = re.search(r"(?:schedule|add|create|book)\s+(.+?)(?:\s+every|\s+weekly|\s+daily|\s+each week|\s+till|\s+until|$)", txt, re.IGNORECASE)
+    title = title_match.group(1).strip().title() if title_match else "Recurring Session"
+    weekdays = _infer_weekly_days_from_message(txt)
+    byday = ",".join(["MO", "TU", "WE", "TH", "FR", "SA", "SU"][d] for d in weekdays)
+    until = _infer_until_yyyymmdd(txt, now_dt)
+    hour, minute, dur = _infer_time_and_duration(txt)
+    start_date = _next_date_for_weekday(now_dt, weekdays[0]) if weekdays else (now_dt + timedelta(days=1)).date().isoformat()
+    rule = f"RRULE:FREQ=WEEKLY;BYDAY={byday}"
+    if until:
+        rule += f";UNTIL={until}"
+    return {
+        "title": title,
+        "description": f"Auto-inferred recurring event from request: {txt}",
+        "date": start_date,
+        "startHour": hour,
+        "startMin": minute,
+        "durationMins": dur,
+        "recurrence": [rule],
+    }
 
 
 def _fetch_attendee_sessions(tokens: dict) -> List[dict]:
@@ -2285,6 +2573,17 @@ async def chat(body: ChatMessage):
         else:
             # No scheduling — use events_to_create directly (backwards compat)
             events = [CalendarEvent(**e) for e in events_raw if isinstance(e, dict)]
+            # Forgiving recurring fallback: if user asked for a recurring event but
+            # model did not emit events_to_create, infer a reasonable recurring series.
+            if not events and _is_recurring_request(body.message):
+                inferred = _fallback_recurring_event_from_message(body.message)
+                if inferred:
+                    try:
+                        events = [CalendarEvent(**inferred)]
+                        if "Here are" in reply or "option" in reply.lower():
+                            reply = "I went ahead and created a recurring event from your request. You can edit the exact days/time from the event modal if needed."
+                    except Exception:
+                        pass
 
     except Exception as e:
         import traceback

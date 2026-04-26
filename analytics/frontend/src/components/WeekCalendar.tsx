@@ -567,10 +567,10 @@ export default function WeekCalendar({ sessions = [], selectedSession, onSelectS
                       style={{
                         top: s.startHour * 60 + s.startMin,
                         height: Math.max(s.durationMins, 40),
-                        background: isPending ? '#888' : s.color,
+                        background: s.color,
                         width,
                         left,
-                        opacity: isDragging ? 0.3 : (isPending ? 0.45 : (totalCols > 1 ? 0.92 : 1)),
+                        opacity: isDragging ? 0.3 : (isPending ? 0.62 : (totalCols > 1 ? 0.92 : 1)),
                         boxShadow: totalCols > 1 ? '2px 0 0 rgba(0,0,0,0.15)' : undefined,
                         cursor: isPending ? 'default' : (isDragging ? 'grabbing' : 'grab'),
                         border: isPending ? '2px dashed rgba(0,0,0,0.4)' : undefined,
