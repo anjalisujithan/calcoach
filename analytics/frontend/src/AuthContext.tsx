@@ -44,12 +44,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    return onAuthStateChanged(auth, async (firebaseUser) => {
+    return onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser);
-      if (firebaseUser) {
-        await registerInFirestore(firebaseUser);
-      }
       setLoading(false);
+      if (firebaseUser) {
+        registerInFirestore(firebaseUser);
+      }
     });
   }, []);
 
