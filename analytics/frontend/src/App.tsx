@@ -20,13 +20,16 @@ function AppShell() {
   const [activeTab, setActiveTab] = useState<Tab>('calendar');
   const [reflections, setReflections] = useState<ReflectionEntry[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [showSurvey, setShowSurvey] = useState<boolean>(
-    () => !localStorage.getItem('calcoach_survey_done')
-  );
+  const [showSurvey, setShowSurvey] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!user) { setShowSurvey(false); return; }
+    setShowSurvey(!localStorage.getItem(`calcoach_survey_done_${user.email}`));
+  }, [user?.email]);
 
   useEffect(() => {
     if (!user) return;
-    fetch(`${API}/reflections?user_id=${encodeURIComponent(user.uid ?? '')}`)
+    fetch(`${API}/reflections?user_id=${encodeURIComponent(user.email ?? '')}`)
       .then(r => r.json())
       .then((data: ReflectionEntry[]) => {
         setReflections(data);
@@ -49,7 +52,7 @@ function AppShell() {
   async function handleSaveReflection(entry: Omit<ReflectionEntry, 'id' | 'savedAt'>) {
     const newEntry: ReflectionEntry = {
       ...entry,
-      userId: user!.uid,
+      userId: user!.email ?? '',
       id: mkId(),
       savedAt: new Date().toISOString(),
     };
