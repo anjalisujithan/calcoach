@@ -9,3 +9,5 @@ client_secret*.json
 node_modules
 .DS_Store
 __pycache__/
+venv/
+*.local-backup
