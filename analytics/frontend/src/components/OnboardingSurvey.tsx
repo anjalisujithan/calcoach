@@ -34,6 +34,18 @@ const DEFAULT_ANSWERS: SurveyAnswers = {
   chunkSize: '',
 };
 
+// Fully-filled fallback used when user dismisses the survey
+export const DISMISSED_DEFAULTS: SurveyAnswers = {
+  userType: 'college_student',
+  helpWith: ['assignments', 'studying'],
+  workDays: ['weekdays'],
+  workStartHour: 9,
+  workEndHour: 21,
+  workStyle: 'mixed',
+  planningHorizon: '1_2_days',
+  chunkSize: '30_60',
+};
+
 interface Props {
   onComplete: (answers: SurveyAnswers) => void;
 }
@@ -43,6 +55,20 @@ export default function OnboardingSurvey({ onComplete }: Props) {
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<SurveyAnswers>(DEFAULT_ANSWERS);
   const [submitting, setSubmitting] = useState(false);
+
+  async function handleDismiss() {
+    const userKey = user?.email ?? 'anon';
+    localStorage.setItem(`calcoach_survey_done_${userKey}`, 'true');
+    localStorage.setItem(`calcoach_survey_answers_${userKey}`, JSON.stringify(DISMISSED_DEFAULTS));
+    try {
+      await fetch(`${ANALYTICS_API}/onboarding`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...DISMISSED_DEFAULTS, email: user?.email ?? '' }),
+      });
+    } catch { /* non-critical */ }
+    onComplete(DISMISSED_DEFAULTS);
+  }
 
   function toggleMulti(field: 'helpWith' | 'workDays', value: string) {
     setAnswers(prev => {
@@ -99,7 +125,19 @@ export default function OnboardingSurvey({ onComplete }: Props) {
       <div style={{
         background: '#fff', borderRadius: '16px', padding: '2.5rem 2rem',
         width: '480px', maxWidth: '95vw', boxShadow: '0 8px 40px rgba(0,0,0,0.18)',
+        position: 'relative',
       }}>
+        <button
+          onClick={handleDismiss}
+          title="Skip and use defaults"
+          style={{
+            position: 'absolute', top: '1rem', right: '1rem',
+            background: 'none', border: 'none', cursor: 'pointer',
+            fontSize: '1.2rem', color: '#999', lineHeight: 1, padding: '0.2rem 0.4rem',
+          }}
+        >
+          ✕
+        </button>
         {/* Progress */}
         <div style={{ display: 'flex', gap: '6px', marginBottom: '1.5rem' }}>
           {STEPS.map((_, i) => (

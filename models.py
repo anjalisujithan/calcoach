@@ -17,7 +17,7 @@ DAY_ORDER: List[str] = [
     "Friday", "Saturday", "Sunday",
 ]
 
-MIN_VIABLE_CHUNK_MINUTES: int = 20
+MIN_VIABLE_CHUNK_MINUTES: int = 1
 
 
 @dataclass

@@ -76,6 +76,15 @@ def get_calendar_tokens(email: str) -> dict | None:
         return None
 
 
+def delete_calendar_tokens(email: str) -> None:
+    """Remove stored OAuth tokens for a user, effectively disconnecting their calendar."""
+    try:
+        db = _get_db()
+        db.collection("users").document(email).update({"calendar_tokens": fs.DELETE_FIELD})
+    except Exception as e:
+        print(f"[calendar] Failed to delete tokens for {email}: {e}")
+
+
 def save_shared_availability_snapshot(email: str, sessions: list[dict]) -> None:
     """Persist a minimal busy-session snapshot for joint scheduling fallback."""
     owner_email = (email or "").strip().lower()

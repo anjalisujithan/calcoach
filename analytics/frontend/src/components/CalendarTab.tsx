@@ -144,6 +144,10 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   const selectedSession = sessions.find(s => s.id === selectedSessionId) ?? null;
 
   useEffect(() => {
+    // Reset state immediately so the previous user's events are never visible to the new user
+    setSessions([]);
+    localIds.current.clear();
+    setAuthenticated(null);
     const q = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
     fetch(`${CALENDAR_API}/auth/status${q}`, { credentials: 'include' })
       .then(r => r.json())
@@ -527,21 +531,43 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
     }));
   }
 
+  async function handleDisconnect() {
+    const emailQ = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
+    try {
+      await fetch(`${CALENDAR_API}/auth/disconnect${emailQ}`, { method: 'POST', credentials: 'include' });
+    } catch { /* best-effort */ }
+    setSessions([]);
+    setAuthenticated(false);
+  }
+
   const resyncBtn = (
     <>
       {authenticated === true && (
-        <button
-          onClick={fetchEvents}
-          disabled={refreshing}
-          style={{
-            background: refreshing ? '#ccc' : '#4285f4',
-            color: '#fff', border: 'none', borderRadius: '6px',
-            padding: '0.4rem 1rem', fontWeight: 600,
-            cursor: refreshing ? 'not-allowed' : 'pointer', fontSize: '0.85rem',
-          }}
-        >
-          {refreshing ? '↻ Syncing…' : '↻ Resync with GCal'}
-        </button>
+        <>
+          <button
+            onClick={fetchEvents}
+            disabled={refreshing}
+            style={{
+              background: refreshing ? '#ccc' : '#4285f4',
+              color: '#fff', border: 'none', borderRadius: '6px',
+              padding: '0.4rem 1rem', fontWeight: 600,
+              cursor: refreshing ? 'not-allowed' : 'pointer', fontSize: '0.85rem',
+            }}
+          >
+            {refreshing ? '↻ Syncing…' : '↻ Resync with GCal'}
+          </button>
+          <button
+            onClick={handleDisconnect}
+            style={{
+              background: '#fff', color: '#d93025',
+              border: '1px solid #d93025', borderRadius: '6px',
+              padding: '0.4rem 0.75rem', fontWeight: 600,
+              cursor: 'pointer', fontSize: '0.85rem',
+            }}
+          >
+            Disconnect Calendar
+          </button>
+        </>
       )}
       {authenticated === false && (
         <a

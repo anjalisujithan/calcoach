@@ -24,10 +24,28 @@ function AppShell() {
 
   useEffect(() => {
     if (!user) { setShowSurvey(false); return; }
-    setShowSurvey(!localStorage.getItem(`calcoach_survey_done_${user.email}`));
+    if (localStorage.getItem(`calcoach_survey_done_${user.email}`)) {
+      setShowSurvey(false);
+      return;
+    }
+    // Re-login case: check server for existing preferences before showing survey
+    fetch(`${API}/preferences?email=${encodeURIComponent(user.email ?? '')}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data?.survey_answers) {
+          localStorage.setItem(`calcoach_survey_done_${user.email}`, 'true');
+          setShowSurvey(false);
+        } else {
+          setShowSurvey(true);
+        }
+      })
+      .catch(() => setShowSurvey(true));
   }, [user?.email]);
 
   useEffect(() => {
+    // Clear stale data from the previous user immediately before fetching for the new one
+    setReflections([]);
+    setSessions([]);
     if (!user) return;
     fetch(`${API}/reflections?user_id=${encodeURIComponent(user.email ?? '')}`)
       .then(r => r.json())
@@ -93,7 +111,7 @@ function AppShell() {
       </header>
       <main className="app-main">
         <div style={{ display: activeTab === 'calendar' ? undefined : 'none', height: '100%' }}>
-          <CalendarTab reflections={reflections} onSaveReflection={handleSaveReflection} onSessionsChange={setSessions} userEmail={user.email ?? ''} />
+          <CalendarTab key={user.email} reflections={reflections} onSaveReflection={handleSaveReflection} onSessionsChange={setSessions} userEmail={user.email ?? ''} />
         </div>
         <div style={{ display: activeTab === 'analytics' ? undefined : 'none', height: '100%' }}>
           <AnalyticsTab reflections={reflections} sessions={sessions} userEmail={user.email ?? ''} />

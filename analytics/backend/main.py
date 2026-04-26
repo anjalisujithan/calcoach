@@ -1482,6 +1482,7 @@ def _validate_scheduling_bundle(
     date_busy = _sessions_to_date_busy(sessions)
     clashes, clash_reason = _bundle_clashes_with_sessions(bundle, date_busy)
     if clashes:
+        print(f"[debug] FILTER clash: '{bundle.get('title')}' — {clash_reason}")
         return False, clash_reason, []
 
     # Hard check 2: all blocks must fall on or before the deadline date
@@ -1491,19 +1492,23 @@ def _validate_scheduling_bundle(
         for p in parts:
             block_date = p.get("date", "")
             if block_date > deadline_date:
-                return False, (
+                reason = (
                     f"Block on {block_date} is after the deadline {deadline_date}. "
                     "All blocks must be scheduled on or before the deadline."
-                ), []
+                )
+                print(f"[debug] FILTER deadline: '{bundle.get('title')}' — {reason}")
+                return False, reason, []
 
     # Hard check 3: total duration must match what the user requested
     if target_minutes is not None:
         actual_minutes = _bundle_total_minutes(bundle)
         if abs(actual_minutes - target_minutes) > 5:
-            return False, (
+            reason = (
                 f"Duration mismatch: blocks total {actual_minutes}min but {target_minutes}min is required. "
                 "Adjust block durationMins so they sum to the requested total."
-            ), []
+            )
+            print(f"[debug] FILTER duration: '{bundle.get('title')}' — {reason}")
+            return False, reason, []
 
     # Hard check 4: work hours / avoid days via ScheduleValidator.
     # Pass an EMPTY calendar so the weekday-keyed slot list doesn't wrongly block every
@@ -1520,6 +1525,7 @@ def _validate_scheduling_bundle(
         ok_b, br = validator.validate_block(block, free_windows, task.deadline_day)
         if not ok_b:
             bad_parts.append((i, br))
+    print(f"[debug] FILTER validator: '{bundle.get('title')}' — {reason}" + (f" | blocks: {bad_parts}" if bad_parts else ""))
     return False, reason, bad_parts
 
 
@@ -1943,6 +1949,9 @@ async def chat(body: ChatMessage):
 
     # Combined sessions = requesting user + all attendees (used for clash detection + LLM prompt)
     combined_sessions = requester_sessions + attendee_sessions
+    print(f"[debug] {len(combined_sessions)} calendar events loaded:")
+    for _s in combined_sessions:
+        print(f"  {_s.get('date')} {_s.get('startHour',0):02d}:{_s.get('startMin',0):02d}+{_s.get('durationMins',0)}min  {_s.get('title','(no title)')}")
 
     history = list(body.history)
     if len(history) > HISTORY_THRESHOLD:
@@ -1968,6 +1977,7 @@ async def chat(body: ChatMessage):
     )
 
     raw = completion.choices[0].message.content
+    print(f"[debug] LLM raw output:\n{raw}")
     reply = raw
     events: List[CalendarEvent] = []
     pending_suggestions: List[RankedSuggestion] = []
