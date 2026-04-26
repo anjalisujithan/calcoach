@@ -90,7 +90,13 @@ def callback(request: Request, code: str, state: str):
 
 
 @router.get("/status")
-def status(request: Request):
+def status(request: Request, email: str = ""):
+    if email:
+        from firestore_client import get_calendar_tokens
+        tokens = get_calendar_tokens(email.strip().lower())
+        if tokens:
+            return {"authenticated": True, "has_refresh_token": bool(tokens.get("refresh_token"))}
+        return {"authenticated": False}
     tokens = request.session.get("tokens")
     if not tokens:
         return {"authenticated": False}

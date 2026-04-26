@@ -13,7 +13,6 @@ if os.getenv("ENVIRONMENT", "development") == "development":
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
 _frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
-_is_production = os.getenv("ENVIRONMENT", "development") == "production"
 
 app = FastAPI()
 
@@ -24,12 +23,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=os.getenv("SECRET_KEY", "dev-secret-change-in-prod"),
-    same_site="none" if _is_production else "lax",
-    https_only=_is_production,
-)
+app.add_middleware(SessionMiddleware, secret_key=os.getenv("SECRET_KEY", "dev-secret-change-in-prod"))
 
 app.include_router(auth_router)
 app.include_router(calendar_router)
