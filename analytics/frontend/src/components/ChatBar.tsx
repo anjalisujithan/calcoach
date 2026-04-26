@@ -37,6 +37,183 @@ function LoadingBubble() {
   );
 }
 
+// ── Shared helpers (module-level so MentionInput can use them too) ─────────────
+
+function getTextContent(el: HTMLElement): string {
+  let text = '';
+  el.childNodes.forEach(node => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      text += node.textContent ?? '';
+    } else if (node.nodeName === 'BR') {
+      text += '\n';
+    } else {
+      const child = node as HTMLElement;
+      if (child.dataset?.mention) {
+        text += child.dataset.mention;
+      } else {
+        text += getTextContent(child);
+      }
+    }
+  });
+  return text;
+}
+
+function getTextBeforeCursor(el: HTMLElement): string {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return '';
+  const range = sel.getRangeAt(0);
+  const preRange = range.cloneRange();
+  preRange.selectNodeContents(el);
+  preRange.setEnd(range.endContainer, range.endOffset);
+  return preRange.toString();
+}
+
+const EMAIL_MENTION_RE = /@([\w.+\-]+@[\w.\-]+\.\w{2,})/g;
+
+// ── Reusable mention input (used inside the task planner for attendees) ────────
+
+interface UserSuggestion {
+  email: string;
+  displayName: string;
+  hasCalendar?: boolean;
+}
+
+interface MentionInputProps {
+  placeholder: string;
+  mentionSearchEndpoint?: string;
+  currentUserEmail?: string;
+  onChange: (text: string, emails: string[]) => void;
+  disabled?: boolean;
+  inputStyle?: React.CSSProperties;
+}
+
+function MentionInput({ placeholder, mentionSearchEndpoint, currentUserEmail, onChange, disabled, inputStyle }: MentionInputProps) {
+  const editRef = useRef<HTMLDivElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [query, setQuery] = useState<string | null>(null);
+  const [results, setResults] = useState<UserSuggestion[]>([]);
+  const [idx, setIdx] = useState(0);
+
+  const search = useCallback(async (q: string) => {
+    if (!mentionSearchEndpoint) { setResults([]); return; }
+    try {
+      const params = new URLSearchParams({ q });
+      if (currentUserEmail) params.set('exclude', currentUserEmail);
+      const res = await fetch(`${mentionSearchEndpoint}?${params}`);
+      const data: UserSuggestion[] = await res.json();
+      setResults(data); setIdx(0);
+    } catch { setResults([]); }
+  }, [mentionSearchEndpoint, currentUserEmail]);
+
+  function notifyChange(el: HTMLElement) {
+    const text = getTextContent(el);
+    const emails = Array.from(text.matchAll(EMAIL_MENTION_RE)).map(m => m[1]);
+    onChange(text, emails);
+  }
+
+  function handleInput() {
+    const el = editRef.current; if (!el) return;
+    notifyChange(el);
+    if (!mentionSearchEndpoint) return;
+    const textBefore = getTextBeforeCursor(el);
+    const match = textBefore.match(/@([^\s@]*)$/);
+    if (match) {
+      const q = match[1]; setQuery(q);
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => search(q), q.length === 0 ? 0 : 200);
+    } else { setQuery(null); setResults([]); }
+  }
+
+  function insertMention(user: UserSuggestion) {
+    if (!user.hasCalendar) return;
+    const el = editRef.current; if (!el) return;
+    el.focus();
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
+    const textNode = range.endContainer;
+    const offset = range.endOffset;
+    if (textNode.nodeType === Node.TEXT_NODE) {
+      const nodeText = textNode.textContent ?? '';
+      const beforeText = nodeText.slice(0, offset);
+      const atMatch = beforeText.match(/@([^\s@]*)$/);
+      if (atMatch) {
+        const atStart = offset - atMatch[0].length;
+        const deleteRange = document.createRange();
+        deleteRange.setStart(textNode, atStart);
+        deleteRange.setEnd(textNode, offset);
+        deleteRange.deleteContents();
+        const span = document.createElement('span');
+        span.className = 'mention-linked-email';
+        span.dataset.mention = `@${user.email}`;
+        span.contentEditable = 'false';
+        span.textContent = `@${user.email}`;
+        const insertRange = sel.getRangeAt(0);
+        insertRange.insertNode(span);
+        const space = document.createTextNode(' ');
+        span.after(space);
+        const newRange = document.createRange();
+        newRange.setStartAfter(space);
+        newRange.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(newRange);
+      }
+    }
+    setQuery(null); setResults([]);
+    if (editRef.current) notifyChange(editRef.current);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (results.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setIdx(i => Math.min(i + 1, results.length - 1)); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setIdx(i => Math.max(i - 1, 0)); return; }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault();
+        const candidate = results[idx];
+        if (candidate?.hasCalendar) insertMention(candidate);
+        return;
+      }
+      if (e.key === 'Escape') { setQuery(null); setResults([]); return; }
+    }
+    if (e.key === 'Enter') e.preventDefault();
+  }
+
+  const showDropdown = query !== null && results.length > 0;
+
+  return (
+    <div style={{ position: 'relative' }}>
+      {showDropdown && (
+        <div className="mention-dropdown" style={{ bottom: '100%', top: 'auto', marginBottom: 4 }}>
+          {results.map((u, i) => (
+            <div
+              key={u.email}
+              className={`mention-option${i === idx && u.hasCalendar ? ' mention-option--active' : ''}${!u.hasCalendar ? ' mention-option--disabled' : ''}`}
+              onMouseDown={e => { e.preventDefault(); insertMention(u); }}
+              title={!u.hasCalendar ? 'This user has not connected Google Calendar' : undefined}
+            >
+              <span className="mention-option-name">{u.displayName || u.email}</span>
+              <span className="mention-option-email">{u.email}</span>
+              {!u.hasCalendar && <span className="mention-option-tag">No calendar</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      <div
+        ref={editRef}
+        contentEditable={!disabled}
+        suppressContentEditableWarning
+        className="chat-contenteditable"
+        style={{ minHeight: '1.8rem', padding: '0.3rem 0.5rem', fontSize: '0.82rem', borderRadius: 5, border: '1px solid #dadce0', background: disabled ? '#f8f8f8' : '#fff', ...inputStyle }}
+        onInput={handleInput}
+        onKeyDown={handleKeyDown}
+        data-placeholder={placeholder}
+      />
+    </div>
+  );
+}
+
+// ── Main ChatBar ───────────────────────────────────────────────────────────────
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -45,17 +222,22 @@ export interface Message {
   isReflection?: boolean;
 }
 
-interface UserSuggestion {
-  email: string;
-  displayName: string;
-  hasCalendar?: boolean;
+interface TaskItem {
+  id: string;
+  text: string;      // plain text from the task name field (may include @mention text)
+  emails: string[];  // @emails extracted from the task name field
+  duration: string;
 }
+
+let _plannerIdCounter = 0;
+function mkPlanId() { return `pt-${++_plannerIdCounter}`; }
 
 interface Props {
   headerLabel: string;
   placeholder: string;
   messages: Message[];
   onSend: (text: string) => void;
+  onSendMultiTask?: (tasks: { name: string; duration?: string; attendees: string[] }[], allAttendeeEmails: string[]) => void;
   contextLabel?: string;
   mentionSearchEndpoint?: string;
   currentUserEmail?: string;
@@ -63,10 +245,16 @@ interface Props {
   onStop?: () => void;
   onReset?: () => void;
   onClose?: () => void;
+  extraActions?: ReactNode;
 }
 
-export default function ChatBar({ headerLabel, placeholder, messages, onSend, contextLabel, mentionSearchEndpoint, currentUserEmail, isLoading, onStop, onReset, onClose }: Props) {
+export default function ChatBar({ headerLabel, placeholder, messages, onSend, onSendMultiTask, contextLabel, mentionSearchEndpoint, currentUserEmail, isLoading, onStop, onReset, onClose, extraActions }: Props) {
   const [isEmpty, setIsEmpty] = useState(true);
+  const [showPlanner, setShowPlanner] = useState(false);
+  const [plannerTasks, setPlannerTasks] = useState<TaskItem[]>([
+    { id: mkPlanId(), text: '', emails: [], duration: '' },
+    { id: mkPlanId(), text: '', emails: [], duration: '' },
+  ]);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [mentionResults, setMentionResults] = useState<UserSuggestion[]>([]);
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -77,37 +265,6 @@ export default function ChatBar({ headerLabel, placeholder, messages, onSend, co
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
-
-  // Extract plain text from the contenteditable div, preserving mention @email values
-  function getTextContent(el: HTMLElement): string {
-    let text = '';
-    el.childNodes.forEach(node => {
-      if (node.nodeType === Node.TEXT_NODE) {
-        text += node.textContent ?? '';
-      } else if (node.nodeName === 'BR') {
-        text += '\n';
-      } else {
-        const child = node as HTMLElement;
-        if (child.dataset?.mention) {
-          text += child.dataset.mention;
-        } else {
-          text += getTextContent(child);
-        }
-      }
-    });
-    return text;
-  }
-
-  // Get the text content from the start of the div up to the current cursor position
-  function getTextBeforeCursor(el: HTMLElement): string {
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return '';
-    const range = sel.getRangeAt(0);
-    const preRange = range.cloneRange();
-    preRange.selectNodeContents(el);
-    preRange.setEnd(range.endContainer, range.endOffset);
-    return preRange.toString();
-  }
 
   const searchMentions = useCallback(async (q: string) => {
     if (!mentionSearchEndpoint) {
@@ -172,27 +329,23 @@ export default function ChatBar({ headerLabel, placeholder, messages, onSend, co
       if (atMatch) {
         const atStart = offset - atMatch[0].length;
 
-        // Remove the @query text
         const deleteRange = document.createRange();
         deleteRange.setStart(textNode, atStart);
         deleteRange.setEnd(textNode, offset);
         deleteRange.deleteContents();
 
-        // Build the mention span (non-editable so it acts as a single unit)
         const span = document.createElement('span');
         span.className = 'mention-linked-email';
         span.dataset.mention = `@${user.email}`;
         span.contentEditable = 'false';
         span.textContent = `@${user.email}`;
 
-        // Insert span at the current cursor, then a non-breaking space after it
         const insertRange = sel.getRangeAt(0);
         insertRange.insertNode(span);
 
-        const space = document.createTextNode('\u00a0');
+        const space = document.createTextNode(' ');
         span.after(space);
 
-        // Move cursor after the trailing space
         const newRange = document.createRange();
         newRange.setStartAfter(space);
         newRange.collapse(true);
@@ -200,7 +353,6 @@ export default function ChatBar({ headerLabel, placeholder, messages, onSend, co
         sel.addRange(newRange);
       }
     }
-
 
     setMentionQuery(null);
     setMentionResults([]);
@@ -291,6 +443,9 @@ export default function ChatBar({ headerLabel, placeholder, messages, onSend, co
     return chunks;
   }
 
+  const validTaskCount = plannerTasks.filter(t => t.text.trim()).length;
+  const canSubmitPlanner = validTaskCount >= 2 && !isLoading;
+
   return (
     <div className="chat-sidebar">
       <div className="chat-header">
@@ -335,6 +490,101 @@ export default function ChatBar({ headerLabel, placeholder, messages, onSend, co
       </div>
 
       <div className="chat-input-area">
+        {extraActions && <div style={{ marginBottom: 8 }}>{extraActions}</div>}
+        {onSendMultiTask && (
+          <div style={{ marginBottom: 8 }}>
+            <button
+              type="button"
+              onClick={() => setShowPlanner(p => !p)}
+              style={{
+                background: showPlanner ? '#e8f0fe' : 'transparent',
+                color: '#1a73e8',
+                border: '1px solid #c5d5f5',
+                borderRadius: '6px',
+                padding: '0.3rem 0.7rem',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                width: '100%',
+              }}
+            >
+              {showPlanner ? '▾ Plan multiple tasks' : '▸ Plan multiple tasks'}
+            </button>
+            {showPlanner && (
+              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {plannerTasks.map((task, i) => (
+                  <div key={task.id} style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                    <div style={{ flex: 2 }}>
+                      <MentionInput
+                        placeholder={`Task ${i + 1} — e.g. Gym or @friend for joint`}
+                        mentionSearchEndpoint={mentionSearchEndpoint}
+                        currentUserEmail={currentUserEmail}
+                        onChange={(text, emails) =>
+                          setPlannerTasks(ts => ts.map((t) => t.id === task.id ? { ...t, text, emails } : t))
+                        }
+                        disabled={isLoading}
+                        inputStyle={{ flex: 1, outline: 'none' }}
+                      />
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="Duration"
+                      value={task.duration}
+                      onChange={e => setPlannerTasks(ts => ts.map((t) => t.id === task.id ? { ...t, duration: e.target.value } : t))}
+                      style={{
+                        flex: 1, padding: '0.35rem 0.5rem', borderRadius: 5,
+                        border: '1px solid #dadce0', fontSize: '0.82rem', outline: 'none',
+                      }}
+                    />
+                    {plannerTasks.length > 2 && (
+                      <button
+                        type="button"
+                        onClick={() => setPlannerTasks(ts => ts.filter((t) => t.id !== task.id))}
+                        style={{ background: 'none', border: 'none', color: '#d93025', cursor: 'pointer', fontSize: '1rem', padding: '0 4px', marginTop: 4 }}
+                        title="Remove task"
+                      >×</button>
+                    )}
+                  </div>
+                ))}
+
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    type="button"
+                    onClick={() => setPlannerTasks(ts => [...ts, { id: mkPlanId(), text: '', emails: [], duration: '' }])}
+                    style={{
+                      flex: 1, background: 'transparent', color: '#1a73e8',
+                      border: '1px dashed #c5d5f5', borderRadius: 5,
+                      padding: '0.3rem', fontSize: '0.8rem', cursor: 'pointer',
+                    }}
+                  >+ Add task</button>
+                  <button
+                    type="button"
+                    disabled={!canSubmitPlanner}
+                    onClick={() => {
+                      const valid = plannerTasks
+                        .filter(t => t.text.trim())
+                        .map(t => ({ name: t.text.trim(), duration: t.duration.trim() || undefined, attendees: t.emails }));
+                      const allEmails = valid.flatMap(t => t.attendees).filter((e, i, a) => a.indexOf(e) === i);
+                      onSendMultiTask(valid, allEmails);
+                      setShowPlanner(false);
+                      setPlannerTasks([
+                        { id: mkPlanId(), text: '', emails: [], duration: '' },
+                        { id: mkPlanId(), text: '', emails: [], duration: '' },
+                      ]);
+                    }}
+                    style={{
+                      flex: 2,
+                      background: canSubmitPlanner ? '#1a73e8' : '#ccc',
+                      color: '#fff', border: 'none', borderRadius: 5,
+                      padding: '0.3rem 0.6rem', fontSize: '0.82rem', fontWeight: 600,
+                      cursor: canSubmitPlanner ? 'pointer' : 'not-allowed',
+                    }}
+                  >Suggest Schedule</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         {showDropdown && (
           <div className="mention-dropdown">
             {mentionResults.map((u, i) => (

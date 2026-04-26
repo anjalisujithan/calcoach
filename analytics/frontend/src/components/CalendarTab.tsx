@@ -134,8 +134,8 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
   const inFlightController = useRef<AbortController | null>(null);
   const inFlightTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortReason = useRef<'user' | 'timeout' | null>(null);
-  /** groupId → { slotIndex, events[], attendeeEmails? } for /feedback + multi-block GCal create */
-  const pendingSlotMap = useRef<Map<string, { slotIndex: number; events: any[]; attendeeEmails?: string[] }>>(new Map());
+  /** groupId → { slotIndex, events[], attendeeEmails?, isMultiTask?, taskIndex? } for /feedback + multi-block GCal create */
+  const pendingSlotMap = useRef<Map<string, { slotIndex: number; events: any[]; attendeeEmails?: string[]; isMultiTask?: boolean; taskIndex?: number }>>(new Map());
   /** pending block session id → groupId */
   const pendingSessionToGroup = useRef<Map<string, string>>(new Map());
   /** attendee emails mentioned anywhere in the current chat thread — persists across turns */
@@ -357,7 +357,9 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
         pendingSlotMap.current.clear();
         pendingSessionToGroup.current.clear();
 
+        const isMultiTask = data.multi_task ?? false;
         const attendeeEmails = [...activeAttendeeEmails.current];
+        const TASK_COLORS = ['#4285f4', '#0f9d58', '#f4b400', '#db4437', '#ab47bc', '#00acc1'];
 
         const toAdd: Session[] = [];
         for (const suggestion of suggestions) {
@@ -365,22 +367,25 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
             Array.isArray(suggestion.calendar_blocks) && suggestion.calendar_blocks.length > 0
               ? suggestion.calendar_blocks
               : [suggestion.slot];
+          const taskIndex: number = suggestion.task_index ?? 0;
           const groupId = mkId();
-          pendingSlotMap.current.set(groupId, { slotIndex: suggestion.rank - 1, events, attendeeEmails });
+          pendingSlotMap.current.set(groupId, { slotIndex: suggestion.rank - 1, events, attendeeEmails, isMultiTask, taskIndex });
+          const blockColor = isMultiTask ? TASK_COLORS[taskIndex % TASK_COLORS.length] : '#4285f4';
+          const taskLabel = isMultiTask && suggestion.task_name ? `${suggestion.task_name} #${suggestion.rank}` : `#${suggestion.rank} ${events[0]?.title ?? ''}`;
 
           events.forEach((event: any, i: number) => {
             const pendingId = mkId();
             pendingSessionToGroup.current.set(pendingId, groupId);
             toAdd.push({
               id: pendingId,
-              title: `#${suggestion.rank} ${event.title ?? ''}`,
+              title: i === 0 ? taskLabel : event.title ?? '',
               description: event.description ?? '',
               date: event.date,
               dayIndex: new Date(event.date + 'T00:00:00').getDay(),
               startHour: event.startHour,
               startMin: event.startMin,
               durationMins: event.durationMins,
-              color: '#4285f4',
+              color: blockColor,
               pending: true,
               pendingGroupId: groupId,
               pendingShowActions: i === 0,
@@ -411,6 +416,95 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
         }
         // Resync to load all expanded instances from GCal
         if (hasRecurring) fetchEvents();
+      }
+    } catch (err: any) {
+      const reason = abortReason.current;
+      clearInFlightRequest();
+      const msg = err?.name === 'AbortError'
+        ? reason === 'user'
+          ? 'Stopped.'
+          : 'Request timed out (>120s). The scheduling engine may be overloaded — try again.'
+        : 'Error reaching CalCoach backend.';
+      setMessages(m => [...m, { id: mkId(), role: 'assistant', text: msg }]);
+    }
+  }
+
+  async function handleSendMultiTask(tasks: { name: string; duration?: string; attendees: string[] }[], allAttendeeEmails: string[] = []) {
+    if (chatLoading || tasks.length < 2) return;
+    const summaryText = `Schedule these tasks for me: ${tasks.map(t => t.name + (t.duration ? ` (${t.duration})` : '')).join(', ')}`;
+    const userMsg: Message = { id: mkId(), role: 'user', text: summaryText };
+    setMessages(m => [...m, userMsg]);
+
+    const controller = new AbortController();
+    inFlightController.current = controller;
+    setChatLoading(true);
+    inFlightTimeout.current = setTimeout(() => {
+      abortReason.current = 'timeout';
+      controller.abort();
+    }, 120_000);
+
+    try {
+      const res = await fetch(`${ANALYTICS_API}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          message: summaryText,
+          requester_email: userEmail,
+          history: chatHistory,
+          tasks,
+          attendees: allAttendeeEmails,
+          sessions: sessions.filter(s => !s.pending).map(({ title, date, startHour, startMin, durationMins }) => ({
+            title, date, startHour, startMin, durationMins,
+          })),
+          reflections: reflections.map(({ title, date, startTime, endTime, productivity, reflectionText }) => ({
+            title, date, startTime, endTime, productivity, reflectionText,
+          })),
+        }),
+      });
+      clearInFlightRequest();
+      const data = await res.json();
+      const reply = data.reply ?? 'Sorry, something went wrong.';
+      setMessages(m => [...m, { id: mkId(), role: 'assistant', text: reply }]);
+      if (data.updated_history) setChatHistory(data.updated_history);
+
+      const suggestions: any[] = data.pending_suggestions ?? [];
+      if (suggestions.length > 0) {
+        pendingSlotMap.current.clear();
+        pendingSessionToGroup.current.clear();
+        const TASK_COLORS = ['#4285f4', '#0f9d58', '#f4b400', '#db4437', '#ab47bc', '#00acc1'];
+        const toAdd: Session[] = [];
+        for (const suggestion of suggestions) {
+          const events: any[] =
+            Array.isArray(suggestion.calendar_blocks) && suggestion.calendar_blocks.length > 0
+              ? suggestion.calendar_blocks
+              : [suggestion.slot];
+          const taskIndex: number = suggestion.task_index ?? 0;
+          const taskAttendees: string[] = tasks[taskIndex]?.attendees ?? [];
+          const groupId = mkId();
+          pendingSlotMap.current.set(groupId, { slotIndex: suggestion.rank - 1, events, attendeeEmails: taskAttendees, isMultiTask: true, taskIndex });
+          const blockColor = TASK_COLORS[taskIndex % TASK_COLORS.length];
+          const taskLabel = suggestion.task_name ? `${suggestion.task_name} #${suggestion.rank}` : `#${suggestion.rank} ${events[0]?.title ?? ''}`;
+          events.forEach((event: any, i: number) => {
+            const pendingId = mkId();
+            pendingSessionToGroup.current.set(pendingId, groupId);
+            toAdd.push({
+              id: pendingId,
+              title: i === 0 ? taskLabel : event.title ?? '',
+              description: event.description ?? '',
+              date: event.date,
+              dayIndex: new Date(event.date + 'T00:00:00').getDay(),
+              startHour: event.startHour,
+              startMin: event.startMin,
+              durationMins: event.durationMins,
+              color: blockColor,
+              pending: true,
+              pendingGroupId: groupId,
+              pendingShowActions: i === 0,
+            });
+          });
+        }
+        setSessions(prev => [...prev.filter(s => !s.pending), ...toAdd]);
       }
     } catch (err: any) {
       const reason = abortReason.current;
@@ -492,13 +586,29 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
       }
     }
 
-    setSessions(prev => {
-      const withoutPending = prev.filter(s => !s.pending);
-      return [...withoutPending, ...newRows];
-    });
-
-    pendingSlotMap.current.clear();
-    pendingSessionToGroup.current.clear();
+    if (info.isMultiTask) {
+      // Multi-task: remove ALL alternatives for the same task (same taskIndex), keep other tasks
+      const acceptedTaskIndex = info.taskIndex ?? 0;
+      const removedGroupIds = new Set<string>();
+      Array.from(pendingSlotMap.current.entries()).forEach(([gid, gInfo]) => {
+        if ((gInfo.taskIndex ?? 0) === acceptedTaskIndex) removedGroupIds.add(gid);
+      });
+      removedGroupIds.forEach(gid => pendingSlotMap.current.delete(gid));
+      Array.from(pendingSessionToGroup.current.entries()).forEach(([sid, gid]) => {
+        if (removedGroupIds.has(gid)) pendingSessionToGroup.current.delete(sid);
+      });
+      setSessions(prev => {
+        const withoutThisTask = prev.filter(s => !s.pendingGroupId || !removedGroupIds.has(s.pendingGroupId));
+        return [...withoutThisTask, ...newRows];
+      });
+    } else {
+      pendingSlotMap.current.clear();
+      pendingSessionToGroup.current.clear();
+      setSessions(prev => {
+        const withoutPending = prev.filter(s => !s.pending);
+        return [...withoutPending, ...newRows];
+      });
+    }
 
     // If any accepted event has recurrence, resync to load all expanded instances
     if (info.events.some((e: any) => (e.recurrence ?? []).length > 0)) {
@@ -720,12 +830,31 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           placeholder="Schedule Anything"
           messages={messages}
           onSend={handleSend}
+          onSendMultiTask={handleSendMultiTask}
           mentionSearchEndpoint={`${ANALYTICS_API}/users/search`}
           currentUserEmail={userEmail}
           isLoading={chatLoading}
           onStop={handleStopChat}
           onReset={handleRestartChat}
           onClose={() => setChatOpen(false)}
+          extraActions={sessions.some(s => s.pending) ? (
+            <button
+              onClick={handleAcceptAll}
+              style={{
+                width: '100%',
+                padding: '0.45rem 0.75rem',
+                background: '#1a7a1a',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '6px',
+                fontWeight: 600,
+                fontSize: '0.85rem',
+                cursor: 'pointer',
+              }}
+            >
+              Accept All Suggestions
+            </button>
+          ) : undefined}
         />
       )}
       {selectedSession && (

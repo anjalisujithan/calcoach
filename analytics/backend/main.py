@@ -834,7 +834,9 @@ class CalendarEvent(BaseModel):
 
 
 class RankedSuggestion(BaseModel):
-    rank: int           # 1 = best (bandit's top pick)
+    rank: int           # 1 = best within its task group
+    task_index: int = 0 # which task this belongs to (0-based); 0 for single-task mode
+    task_name: str = "" # display name of the task
     slot: CalendarEvent # first block (same as calendar_blocks[0] when multi-block)
     reasoning: str      # short explanation from the LLM
     calendar_blocks: List[CalendarEvent] = Field(
@@ -854,6 +856,8 @@ class ChatMessage(BaseModel):
     sessions: List[dict] = []
     reflections: List[dict] = []
     requester_email: str = ""
+    tasks: List[dict] = []      # [{name, duration}] for multi-task planner mode
+    attendees: List[str] = []   # explicit attendee emails from the multi-task planner
 
 
 class ChatResponse(BaseModel):
@@ -861,6 +865,7 @@ class ChatResponse(BaseModel):
     events_to_create: List[CalendarEvent] = []       # backwards compat (non-scheduling replies)
     pending_suggestions: List[RankedSuggestion] = [] # ranked scheduling suggestions
     updated_history: List[HistoryMessage] = []
+    multi_task: bool = False
 
 
 @app.get("/shared-invites/respond")
@@ -1351,6 +1356,22 @@ def _task_from_bundle_for_validation(bundle: dict, cand: CandidateSchedule) -> T
     )
 
 
+def _bundles_overlap(a: dict, b: dict) -> bool:
+    """True if any block in bundle a overlaps any block in bundle b on the same date."""
+    for pa in (a.get("parts") or []):
+        da = pa.get("date", "")
+        sa = int(pa.get("startHour", 0)) * 60 + int(pa.get("startMin", 0))
+        ea = sa + int(pa.get("durationMins", 0))
+        for pb in (b.get("parts") or []):
+            if pb.get("date", "") != da:
+                continue
+            sb = int(pb.get("startHour", 0)) * 60 + int(pb.get("startMin", 0))
+            eb = sb + int(pb.get("durationMins", 0))
+            if not (ea <= sb or sa >= eb):
+                return True
+    return False
+
+
 def _bundle_fingerprint(bundle: dict) -> tuple:
     parts = bundle.get("parts") or []
     return tuple(
@@ -1746,9 +1767,11 @@ async def _repair_scheduling_until_viable(
     initial_bundles: List[dict],
     initial_raw: str,
     initial_parsed: dict,
+    target_count: int = TARGET_VIABLE_SUGGESTIONS,
+    is_multi_task: bool = False,
 ) -> Tuple[List[dict], str, str]:
     """
-    Re-prompt the model until we have TARGET_VIABLE_SUGGESTIONS clash-free options
+    Re-prompt the model until we have target_count clash-free options
     (ScheduleValidator vs. sessions busy + work hours), or max rounds.
 
     Returns (viable_bundles, reply_text, last_model_raw).
@@ -1757,9 +1780,8 @@ async def _repair_scheduling_until_viable(
     viable_acc: List[dict] = []
     seen: set = set()
 
-    # Determine the target total duration from the initial suggestions (mode across all 3).
-    # Every validated bundle must sum to this total ± 5 min.
-    target_minutes = _target_duration_from_bundles(initial_bundles)
+    # For multi-task, each bundle is a different task so skip shared-duration enforcement.
+    target_minutes = None if is_multi_task else _target_duration_from_bundles(initial_bundles)
     if target_minutes:
         print(f"[schedule] target_minutes={target_minutes}")
 
@@ -1767,6 +1789,9 @@ async def _repair_scheduling_until_viable(
         for b in bundles:
             ok, _, _ = _validate_scheduling_bundle(b, sessions, prefs, target_minutes=target_minutes)
             if not ok:
+                continue
+            # For multi-task: also reject if this bundle overlaps any already-accepted task slot.
+            if is_multi_task and any(_bundles_overlap(b, v) for v in viable_acc):
                 continue
             fp = _bundle_fingerprint(b)
             if fp in seen:
@@ -1795,12 +1820,17 @@ async def _repair_scheduling_until_viable(
         "Do not schedule any block after this date under any circumstances.\n\n"
     ) if _deadline_for_repair else ""
 
+    multi_task_rule = (
+        "MULTI-TASK RULE: each candidate_slot is for a DIFFERENT task. "
+        f"Return exactly {target_count} slots — one per task — at non-overlapping times.\n\n"
+    ) if is_multi_task else ""
+
     repair_round = 0
-    while len(viable_acc) < TARGET_VIABLE_SUGGESTIONS and repair_round < SCHEDULING_REPAIR_MAX_ROUNDS:
+    while len(viable_acc) < target_count and repair_round < SCHEDULING_REPAIR_MAX_ROUNDS:
         repair_round += 1
         import time as _time
         _t0 = _time.time()
-        print(f"[schedule] repair round {repair_round}/{SCHEDULING_REPAIR_MAX_ROUNDS} — viable so far: {len(viable_acc)}/{TARGET_VIABLE_SUGGESTIONS}")
+        print(f"[schedule] repair round {repair_round}/{SCHEDULING_REPAIR_MAX_ROUNDS} — viable so far: {len(viable_acc)}/{target_count}")
         avail_txt = _format_date_specific_availability(sessions, prefs, days_ahead=21)
         diag = _diagnose_bundles_for_prompt(bundles_in, sessions, prefs, target_minutes=target_minutes)
         valid_json = ""
@@ -1809,7 +1839,7 @@ async def _repair_scheduling_until_viable(
                 "OPTIONS THAT ARE ALREADY VALID — include each below EXACTLY as a full candidate_slots "
                 "element (same title, description, reasoning, and blocks/parts), in this order, at the "
                 "START of your candidate_slots array. Then add NEW valid options until the array has "
-                f"exactly {TARGET_VIABLE_SUGGESTIONS} items in total:\n"
+                f"exactly {target_count} items in total:\n"
                 + json.dumps(viable_acc, indent=2)
                 + "\n\n"
             )
@@ -1818,6 +1848,7 @@ async def _repair_scheduling_until_viable(
             "hard rules (incorrect total duration, blocks after deadline).\n\n"
             f"{deadline_rule}"
             f"{duration_rule}"
+            f"{multi_task_rule}"
             f"{valid_json}"
             "DIAGNOSIS of your LAST response (fix invalid options; keep valid ones verbatim if listed above):\n"
             f"{diag}\n\n"
@@ -1825,7 +1856,7 @@ async def _repair_scheduling_until_viable(
             f"{avail_txt}\n\n"
             f"Work hours: {prefs.work_start}–{prefs.work_end}. avoid_days: {list(prefs.avoid_days)}.\n\n"
             "Return JSON in the SAME schema (reply + candidate_slots + events_to_create). "
-            f"candidate_slots must contain exactly {TARGET_VIABLE_SUGGESTIONS} items; each must be fully valid. "
+            f"candidate_slots must contain exactly {target_count} items; each must be fully valid. "
             "For multi-block options, change only failing blocks' date/startHour/startMin/durationMins when "
             "possible; leave other blocks unchanged."
         )
@@ -1877,8 +1908,15 @@ async def chat(body: ChatMessage):
 
     # ── Joint scheduling: detect @email mentions and load attendee data ──────────
     attendee_emails: List[str] = _extract_attendee_emails(body.message)
+    # Merge explicitly provided attendees (from multi-task planner)
+    for _ae in body.attendees:
+        _ae = _ae.strip().lower()
+        if _ae and _ae not in attendee_emails:
+            attendee_emails.append(_ae)
     requester_email = (body.requester_email or "").strip().lower()
-    is_joint_scheduling = bool(attendee_emails) and _is_scheduling_request(body.message)
+    is_joint_scheduling = bool(attendee_emails) and (
+        _is_scheduling_request(body.message) or bool(body.tasks)
+    )
     requester_ai_summary = await _load_user_ai_summary(requester_email)
     requester_sessions: List[dict] = list(body.sessions)
     attendee_profile = None
@@ -1953,9 +1991,130 @@ async def chat(body: ChatMessage):
     for _s in combined_sessions:
         print(f"  {_s.get('date')} {_s.get('startHour',0):02d}:{_s.get('startMin',0):02d}+{_s.get('durationMins',0)}min  {_s.get('title','(no title)')}")
 
+    # ── Multi-task mode (sequential per-task LLM calls) ───────────────────────
+    is_multi_task = len(body.tasks) >= 2
+    n_suggestions_target = TARGET_VIABLE_SUGGESTIONS  # used in single-task path
+
     history = list(body.history)
     if len(history) > HISTORY_THRESHOLD:
         history = await _compress_history(client, history)
+
+    if is_multi_task:
+        all_pending: List[RankedSuggestion] = []
+
+        for task_idx, task in enumerate(body.tasks):
+            task_name = task.get("name", f"Task {task_idx + 1}")
+            task_duration = task.get("duration", "")
+
+            # Each task is scheduled independently against the real calendar.
+            # We show TARGET_VIABLE_SUGGESTIONS alternatives per task so the user
+            # can pick their preferred slot for each one.
+            task_sys = _build_system_prompt(combined_sessions, body.reflections, user_ai_summary=requester_ai_summary)
+            task_sys += (
+                f"\n\nSchedule {TARGET_VIABLE_SUGGESTIONS} different time options for this task: {task_name}"
+                + (f" ({task_duration})" if task_duration else "")
+                + f".\nReturn exactly {TARGET_VIABLE_SUGGESTIONS} entries in candidate_slots, each a different time for the same task."
+            )
+            task_msgs = [{"role": "system", "content": task_sys}]
+            for h in history:
+                task_msgs.append({"role": h.role if h.role != "system" else "user", "content": h.text})
+            task_user_msg = (
+                f"Give me {TARGET_VIABLE_SUGGESTIONS} different scheduling options for: {task_name}"
+                + (f" ({task_duration})" if task_duration else "") + "."
+            )
+            task_msgs.append({"role": "user", "content": task_user_msg})
+
+            try:
+                task_comp = await client.chat.completions.create(
+                    model="meta-llama/llama-4-scout-17b-16e-instruct",
+                    messages=task_msgs,
+                    response_format={"type": "json_object"},
+                )
+                task_raw = task_comp.choices[0].message.content
+                print(f"[multi-task] task {task_idx+1} ({task_name}) raw: {task_raw[:200]}")
+                task_parsed = json.loads(task_raw)
+                task_slots_raw = task_parsed.get("candidate_slots", [])
+                task_bundles: List[dict] = []
+                for x in (task_slots_raw if isinstance(task_slots_raw, list) else []):
+                    if isinstance(x, dict):
+                        nb = _normalize_scheduling_candidate(x)
+                        if nb:
+                            task_bundles.append(nb)
+
+                viable: List[dict] = []
+                if task_bundles and _RL_AVAILABLE and ScheduleValidator is not None:
+                    try:
+                        viable, _, _ = await _repair_scheduling_until_viable(
+                            client, task_msgs, combined_sessions, task_bundles, task_raw, task_parsed,
+                            target_count=TARGET_VIABLE_SUGGESTIONS, is_multi_task=False,
+                        )
+                    except Exception as e:
+                        print(f"[multi-task] repair error for {task_name}: {e}")
+                        viable = task_bundles[:TARGET_VIABLE_SUGGESTIONS]
+                elif task_bundles:
+                    viable = task_bundles[:TARGET_VIABLE_SUGGESTIONS]
+
+                ranked = _rank_slots(viable, requester_sessions) if viable else []
+                for alt_idx, bundle in enumerate(ranked[:TARGET_VIABLE_SUGGESTIONS]):
+                    parts = bundle.get("parts") or []
+                    cal_events_t: List[CalendarEvent] = []
+                    for p in parts:
+                        try:
+                            cal_events_t.append(CalendarEvent(
+                                title=p.get("title", task_name),
+                                description=p.get("description", ""),
+                                date=p["date"],
+                                startHour=int(p.get("startHour", 0)),
+                                startMin=int(p.get("startMin", 0)),
+                                durationMins=int(p.get("durationMins", 60)),
+                            ))
+                        except Exception:
+                            continue
+                    if cal_events_t:
+                        all_pending.append(RankedSuggestion(
+                            rank=alt_idx + 1,
+                            task_index=task_idx,
+                            task_name=task_name,
+                            slot=cal_events_t[0],
+                            reasoning=bundle.get("reasoning", ""),
+                            calendar_blocks=cal_events_t,
+                        ))
+
+                if not viable:
+                    print(f"[multi-task] no viable slots found for {task_name}")
+            except Exception as e:
+                import traceback
+                print(f"[multi-task] error scheduling {task_name}: {e}")
+                traceback.print_exc()
+
+        if all_pending:
+            task_groups: dict = {}
+            for s in all_pending:
+                task_groups.setdefault(s.task_name, []).append(s)
+            lines = [f"Here are {TARGET_VIABLE_SUGGESTIONS} time options for each of your {len(task_groups)} tasks:", ""]
+            for tname, suggestions in task_groups.items():
+                lines.append(f"**{tname}:**")
+                for s in suggestions:
+                    e0 = s.calendar_blocks[0] if s.calendar_blocks else s.slot
+                    lines.append(f"  Option {s.rank}: {e0.date} {e0.startHour:02d}:{e0.startMin:02d}")
+                lines.append("")
+            lines.append("Options are shown on your calendar. Accept your preferred time for each task — choosing one dismisses the other options for that task.")
+            mt_reply = "\n".join(lines)
+        else:
+            mt_reply = "I couldn't find suitable times for your tasks. Try adjusting the task names or durations."
+
+        task_list_short = ", ".join(t.get("name", "task") for t in body.tasks)
+        mt_history = history + [
+            HistoryMessage(role="user", text=f"Schedule these tasks: {task_list_short}"),
+            HistoryMessage(role="assistant", text=mt_reply),
+        ]
+        return ChatResponse(
+            reply=mt_reply,
+            events_to_create=[],
+            pending_suggestions=all_pending,
+            updated_history=mt_history,
+            multi_task=True,
+        )
 
     system_prompt = _build_system_prompt(
         combined_sessions,
@@ -2000,15 +2159,17 @@ async def chat(body: ChatMessage):
             if bundles_in and _RL_AVAILABLE and ScheduleValidator is not None:
                 try:
                     viable, reply, _ = await _repair_scheduling_until_viable(
-                        client, messages, combined_sessions, bundles_in, raw, parsed
+                        client, messages, combined_sessions, bundles_in, raw, parsed,
+                        target_count=n_suggestions_target,
+                        is_multi_task=is_multi_task,
                     )
                     ranked_bundles = _rank_slots(
                         viable, requester_sessions,
                         attendee_profile=attendee_profile,
                         attendee_sessions=attendee_sessions if attendee_sessions else None,
                     )
-                    ranked_bundles = ranked_bundles[:TARGET_VIABLE_SUGGESTIONS]
-                    if len(ranked_bundles) < TARGET_VIABLE_SUGGESTIONS:
+                    ranked_bundles = ranked_bundles[:n_suggestions_target]
+                    if len(ranked_bundles) < n_suggestions_target:
                         reply = (
                             f"{reply}\n\n_Note: Only {len(ranked_bundles)} clash-free option(s) fit "
                             + ("all calendars" if valid_attendee_emails else "your calendar")
@@ -2023,10 +2184,10 @@ async def chat(body: ChatMessage):
                         attendee_profile=attendee_profile,
                         attendee_sessions=attendee_sessions if attendee_sessions else None,
                     )
-                    ranked_bundles = ranked_bundles[:TARGET_VIABLE_SUGGESTIONS]
+                    ranked_bundles = ranked_bundles[:n_suggestions_target]
             else:
                 ranked_bundles = _rank_slots(bundles_in, requester_sessions) if bundles_in else []
-                ranked_bundles = ranked_bundles[:TARGET_VIABLE_SUGGESTIONS]
+                ranked_bundles = ranked_bundles[:n_suggestions_target]
 
             # Final clash filter against both users' events
             _date_busy = _sessions_to_date_busy(combined_sessions)
@@ -2107,6 +2268,7 @@ async def chat(body: ChatMessage):
         events_to_create=events,
         pending_suggestions=pending_suggestions,
         updated_history=updated_history,
+        multi_task=is_multi_task,
     )
 
 
