@@ -506,6 +506,81 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
     }
   }
 
+  async function handleAcceptAll() {
+    const groups = Array.from(pendingSlotMap.current.entries());
+    if (groups.length === 0) return;
+
+    const stripRank = (t: string) => t.replace(/^#\d+\s+/, '');
+    const emailQ = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
+    const allNewRows: Session[] = [];
+
+    for (const [, info] of groups) {
+      try {
+        await fetch(`${ANALYTICS_API}/feedback`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ slot_index: info.slotIndex, feedback: 'accepted' }),
+        });
+      } catch { /* non-critical */ }
+
+      for (const e of info.events) {
+        if (authenticated) {
+          try {
+            const res = await fetch(`${CALENDAR_API}/calendar/events${emailQ}`, {
+              method: 'POST',
+              credentials: 'include',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                title: stripRank(e.title ?? ''),
+                description: e.description ?? '',
+                date: e.date,
+                startHour: e.startHour,
+                startMin: e.startMin,
+                durationMins: e.durationMins,
+                recurrence: [],
+                attendees: info.attendeeEmails?.length ? [userEmail, ...info.attendeeEmails].filter(Boolean) : [],
+              }),
+            });
+            const d = await res.json();
+            allNewRows.push({
+              id: d.event?.id ?? mkId(),
+              title: stripRank(e.title ?? ''),
+              description: e.description ?? '',
+              date: e.date,
+              dayIndex: new Date(e.date + 'T00:00:00').getDay(),
+              startHour: e.startHour,
+              startMin: e.startMin,
+              durationMins: e.durationMins,
+              color: '#4285f4',
+            });
+            continue;
+          } catch { /* fall through to local */ }
+        }
+        const tid = mkId();
+        localIds.current.add(tid);
+        allNewRows.push({
+          id: tid,
+          title: stripRank(e.title ?? ''),
+          description: e.description ?? '',
+          date: e.date,
+          dayIndex: new Date(e.date + 'T00:00:00').getDay(),
+          startHour: e.startHour,
+          startMin: e.startMin,
+          durationMins: e.durationMins,
+          color: '#4285f4',
+        });
+      }
+    }
+
+    setSessions(prev => [...prev.filter(s => !s.pending), ...allNewRows]);
+    pendingSlotMap.current.clear();
+    pendingSessionToGroup.current.clear();
+
+    if (groups.some(([, info]) => info.events.some((e: any) => (e.recurrence ?? []).length > 0))) {
+      fetchEvents();
+    }
+  }
+
   async function handleRejectSession(id: string) {
     const groupId = pendingSessionToGroup.current.get(id) ?? id;
     const info = pendingSlotMap.current.get(groupId);
@@ -542,6 +617,23 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
 
   const resyncBtn = (
     <>
+      {sessions.some(s => s.pending) && (
+        <button
+          onClick={handleAcceptAll}
+          style={{
+            background: '#1a7a1a',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '6px',
+            padding: '0.4rem 1rem',
+            fontWeight: 600,
+            cursor: 'pointer',
+            fontSize: '0.85rem',
+          }}
+        >
+          Accept All
+        </button>
+      )}
       {authenticated === true && (
         <>
           <button

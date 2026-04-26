@@ -8,3 +8,4 @@ __pycache__/
 client_secret*.json
 node_modules
 .DS_Store
+__pycache__/
