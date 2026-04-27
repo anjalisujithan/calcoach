@@ -14,9 +14,24 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
 # ── RL imports (optional — app degrades gracefully if not installed) ──────────
-_CALCOACH_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent)
-if _CALCOACH_ROOT not in sys.path:
-    sys.path.insert(0, _CALCOACH_ROOT)
+# Register the repo root as the 'calcoach' package so all calcoach.* imports
+# work regardless of the directory name Railway/Vercel deploys the repo into
+# (locally the parent dir happens to be named "calcoach"; on Railway it's /app).
+import importlib.util as _importlib_util
+import types as _types
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+if "calcoach" not in sys.modules:
+    _pkg = _types.ModuleType("calcoach")
+    _pkg.__path__ = [str(_REPO_ROOT)]
+    _pkg.__file__ = str(_REPO_ROOT / "__init__.py")
+    _pkg.__package__ = "calcoach"
+    _pkg.__spec__ = _importlib_util.spec_from_file_location(
+        "calcoach",
+        str(_REPO_ROOT / "__init__.py"),
+        submodule_search_locations=[str(_REPO_ROOT)],
+    )
+    sys.modules["calcoach"] = _pkg
 
 try:
     from datetime import time as _time
