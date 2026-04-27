@@ -146,6 +146,7 @@ class GoogleCalendarService:
             "description": description,
             "location": location,
             "visibility": visibility,
+            "colorId": "8",  # Blueberry
             "start": {"dateTime": start, "timeZone": timezone},
             "end": {"dateTime": end, "timeZone": timezone},
             "extendedProperties": {
