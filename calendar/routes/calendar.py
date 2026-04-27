@@ -121,7 +121,6 @@ def create_event(request: Request, body: NewEvent, email: str = Query(default=""
     start_dt = datetime(year, month, day, body.startHour, body.startMin)
     end_dt = start_dt + timedelta(minutes=body.durationMins)
 
-    print(f"[calendar] create_event '{body.title}' attendees={body.attendees}")
     service = get_calendar_service(tokens)
     event = service.add_event(
         summary=body.title,

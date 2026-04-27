@@ -158,5 +158,4 @@ class GoogleCalendarService:
         if valid_attendees:
             event["attendees"] = [{"email": a} for a in valid_attendees]
         send_updates = "all" if valid_attendees else "none"
-        print(f"[gcal] inserting event '{summary}' attendees={valid_attendees} sendUpdates={send_updates}")
         return self.service.events().insert(calendarId=calendar_id, body=event, sendUpdates=send_updates).execute()

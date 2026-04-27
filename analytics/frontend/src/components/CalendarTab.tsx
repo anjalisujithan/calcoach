@@ -294,8 +294,8 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
         }
       }
       setSessions([...gcalSessions, ...pushed.filter(s => !gcalIds.has(s.id))]);
-    } catch (e) {
-      console.error(e);
+    } catch {
+      // ignore fetch errors; refreshing flag is cleared in finally
     } finally {
       setRefreshing(false);
     }
