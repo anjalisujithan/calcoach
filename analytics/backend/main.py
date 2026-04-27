@@ -2711,12 +2711,25 @@ async def _repair_scheduling_until_viable(
         diag = _diagnose_bundles_for_prompt(bundles_in, sessions, prefs, target_minutes=target_minutes)
         valid_json = ""
         if viable_acc:
+            already_used_times = []
+            for vb in viable_acc:
+                for vp in (vb.get("parts") or []):
+                    sh = int(vp.get("startHour", 0))
+                    sm = int(vp.get("startMin", 0))
+                    dur = int(vp.get("durationMins", 0))
+                    already_used_times.append(
+                        f"  {vp.get('date', '?')} {sh:02d}:{sm:02d}–{(sh * 60 + sm + dur) // 60:02d}:{(sh * 60 + sm + dur) % 60:02d}"
+                    )
+            already_used_str = "\n".join(already_used_times) if already_used_times else "  (none)"
+            still_need = target_count - len(viable_acc)
             valid_json = (
                 "OPTIONS THAT ARE ALREADY VALID — include each below EXACTLY as a full candidate_slots "
                 "element (same title, description, reasoning, and blocks/parts), in this order, at the "
                 "START of your candidate_slots array. Then add NEW valid options until the array has "
                 f"exactly {target_count} items in total:\n"
                 + json.dumps(viable_acc, indent=2)
+                + f"\n\nTIME SLOTS ALREADY USED BY THE VALID OPTIONS ABOVE (your {still_need} new option(s) MUST NOT use any of these exact times — pick genuinely different times of day or different days):\n"
+                + already_used_str
                 + "\n\n"
             )
         repair_content = (
@@ -3133,6 +3146,14 @@ async def chat(body: ChatMessage):
                 reply_lines.append("")
 
             if pending_suggestions:
+                actual_count = len(pending_suggestions)
+                if actual_count < n_suggestions_target and reply_lines:
+                    # Model said "3 options" in its reply but fewer survived validation/parsing.
+                    # Fix the leading sentence so the count matches what's actually on the calendar.
+                    reply_lines[0] = re.sub(
+                        r'\b3\b', str(actual_count), reply_lines[0], count=1
+                    )
+
                 if is_recurring_request:
                     reply_lines.append(
                         "Recurring options are previewed on your calendar. Use ✓ to schedule the whole series, or ✗ to dismiss."
