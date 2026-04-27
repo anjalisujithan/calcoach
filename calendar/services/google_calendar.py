@@ -125,7 +125,7 @@ class GoogleCalendarService:
                 return
             raise
 
-    def update_event(self, event_id: str, summary: str, start: str, end: str, description: str = "", location: str = "", location_type: str = "room", timezone: str = "America/Los_Angeles", visibility: str = "default", calendar_id: str = "primary", recurrence: list = [], color: str = "#FF1493") -> dict:
+    def update_event(self, event_id: str, summary: str, start: str, end: str, description: str = "", location: str = "", location_type: str = "room", timezone: str = "America/Los_Angeles", visibility: str = "default", calendar_id: str = "primary", recurrence: list = [], color: str = "#4285f4") -> dict:
         body = {
             "summary": summary,
             "description": description,
@@ -140,7 +140,7 @@ class GoogleCalendarService:
         body["recurrence"] = recurrence  # always set — empty list clears recurrence on GCal
         return self.service.events().patch(calendarId=calendar_id, eventId=event_id, body=body).execute()
 
-    def add_event(self, summary: str, start: str, end: str, description: str = "", location: str = "", location_type: str = "room", timezone: str = "America/Los_Angeles", visibility: str = "default", calendar_id: str = "primary", recurrence: list = [], color: str = "#FF1493", attendees: list = []) -> dict:
+    def add_event(self, summary: str, start: str, end: str, description: str = "", location: str = "", location_type: str = "room", timezone: str = "America/Los_Angeles", visibility: str = "default", calendar_id: str = "primary", recurrence: list = [], color: str = "#4285f4", attendees: list = []) -> dict:
         event = {
             "summary": summary,
             "description": description,

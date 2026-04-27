@@ -33,7 +33,7 @@ class NewEvent(BaseModel):
     durationMins: int
     recurrence: list[str] = []  # e.g. ["RRULE:FREQ=WEEKLY;BYDAY=MO,WE"]
     attendees: list[str] = []   # email addresses to invite
-    color: str = "#FF1493"
+    color: str = "#4285f4"
 
 
 @router.get("/calendars")

@@ -57,7 +57,7 @@ function googleEventToSession(event: any): Session | null {
     startHour: start.getHours(),
     startMin: start.getMinutes(),
     durationMins,
-    color: event.extendedProperties?.private?.calcoachColor ?? GCAL_COLORS[event.colorId] ?? '#FF1493',
+    color: event.extendedProperties?.private?.calcoachColor ?? GCAL_COLORS[event.colorId] ?? '#4285f4',
     recurrence: event.recurrence,
     recurringEventId: event.recurringEventId,
     attendees: event.attendees ?? [],
@@ -183,7 +183,7 @@ function sessionToPayload(s: Omit<Session, 'id'>) {
     startMin: s.startMin,
     durationMins: s.durationMins,
     recurrence: s.recurrence ?? [],
-    color: s.color ?? '#FF1493',
+    color: s.color ?? '#4285f4',
   };
 }
 
@@ -502,8 +502,8 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
 
         const isMultiTask = data.multi_task ?? false;
         const attendeeEmails = [...activeAttendeeEmails.current];
-        const TASK_COLORS = ['#FF1493', '#0f9d58', '#f4b400', '#db4437', '#ab47bc', '#00acc1'];
-        const OPTION_COLORS = ['#FF1493', '#0f9d58', '#f4b400', '#db4437', '#ab47bc', '#00acc1'];
+        const TASK_COLORS = ['#4285f4', '#0f9d58', '#f4b400', '#db4437', '#ab47bc', '#00acc1'];
+        const OPTION_COLORS = ['#4285f4', '#0f9d58', '#f4b400', '#db4437', '#ab47bc', '#00acc1'];
 
         const toAdd: Session[] = [];
         for (const suggestion of suggestions) {
@@ -572,7 +572,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
             startHour: event.startHour,
             startMin: event.startMin,
             durationMins: event.durationMins,
-            color: '#FF1493',
+            color: '#4285f4',
             recurrence,
           });
         }
@@ -641,7 +641,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
       if (suggestions.length > 0) {
         pendingSlotMap.current.clear();
         pendingSessionToGroup.current.clear();
-        const TASK_COLORS = ['#FF1493', '#0f9d58', '#f4b400', '#db4437', '#ab47bc', '#00acc1'];
+        const TASK_COLORS = ['#4285f4', '#0f9d58', '#f4b400', '#db4437', '#ab47bc', '#00acc1'];
         const toAdd: Session[] = [];
         for (const suggestion of suggestions) {
           const events: any[] =
@@ -740,7 +740,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
               startHour: e.startHour,
               startMin: e.startMin,
               durationMins: e.durationMins,
-              color: e.color ?? sessions.find(s => s.id === id)?.color ?? '#FF1493',
+              color: e.color ?? sessions.find(s => s.id === id)?.color ?? '#4285f4',
               recurrence: e.recurrence ?? [],
             });
             continue;
@@ -757,7 +757,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           startHour: e.startHour,
           startMin: e.startMin,
           durationMins: e.durationMins,
-          color: e.color ?? sessions.find(s => s.id === id)?.color ?? '#FF1493',
+          color: e.color ?? sessions.find(s => s.id === id)?.color ?? '#4285f4',
           recurrence: e.recurrence ?? [],
         });
       }
@@ -841,7 +841,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
               startHour: e.startHour,
               startMin: e.startMin,
               durationMins: e.durationMins,
-              color: e.color ?? '#FF1493',
+              color: e.color ?? '#4285f4',
               recurrence: e.recurrence ?? [],
             });
             continue;
@@ -858,7 +858,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           startHour: e.startHour,
           startMin: e.startMin,
           durationMins: e.durationMins,
-          color: e.color ?? '#FF1493',
+          color: e.color ?? '#4285f4',
           recurrence: e.recurrence ?? [],
         });
       }
@@ -935,7 +935,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
             onClick={fetchEvents}
             disabled={refreshing}
             style={{
-              background: refreshing ? '#ccc' : '#FF1493',
+              background: refreshing ? '#ccc' : '#4285f4',
               color: '#fff', border: 'none', borderRadius: '6px',
               padding: '0.4rem 1rem', fontWeight: 600,
               cursor: refreshing ? 'not-allowed' : 'pointer', fontSize: '0.85rem',
@@ -1085,7 +1085,7 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
             startHour: newEventDraft.startHour,
             startMin: newEventDraft.startMin,
             durationMins: newEventDraft.durationMins,
-            color: '#FF1493',
+            color: '#4285f4',
           }}
           reflections={reflections}
           categories={categories}
