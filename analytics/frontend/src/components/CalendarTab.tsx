@@ -754,6 +754,26 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
     }));
   }
 
+  function handleRejectAll() {
+    const groups = Array.from(pendingSlotMap.current.entries());
+    for (const [, info] of groups) {
+      fetch(`${ANALYTICS_API}/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slot_index: info.slotIndex, feedback: 'rejected' }),
+      }).catch(() => {});
+    }
+    pendingSlotMap.current.clear();
+    pendingSessionToGroup.current.clear();
+    setSessions(prev => prev.filter(s => !s.pending));
+    setMessages(m => [...m, {
+      id: mkId(),
+      role: 'assistant',
+      text: "No problem! Let me know what didn't work — for example, different times of day, specific days to avoid, a shorter or longer session, or any other preferences — and I'll suggest better options.",
+    }]);
+    if (!chatOpen) setChatOpen(true);
+  }
+
   async function handleDisconnect() {
     const emailQ = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
     try {
@@ -765,23 +785,6 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
 
   const resyncBtn = (
     <>
-      {sessions.some(s => s.pending) && (
-        <button
-          onClick={handleAcceptAll}
-          style={{
-            background: '#1a7a1a',
-            color: '#fff',
-            border: 'none',
-            borderRadius: '6px',
-            padding: '0.4rem 1rem',
-            fontWeight: 600,
-            cursor: 'pointer',
-            fontSize: '0.85rem',
-          }}
-        >
-          Accept All
-        </button>
-      )}
       {authenticated === true && (
         <>
           <button
@@ -876,22 +879,40 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           onReset={handleRestartChat}
           onClose={() => setChatOpen(false)}
           extraActions={sessions.some(s => s.pending) ? (
-            <button
-              onClick={handleAcceptAll}
-              style={{
-                width: '100%',
-                padding: '0.45rem 0.75rem',
-                background: '#1a7a1a',
-                color: '#fff',
-                border: 'none',
-                borderRadius: '6px',
-                fontWeight: 600,
-                fontSize: '0.85rem',
-                cursor: 'pointer',
-              }}
-            >
-              Accept All Suggestions
-            </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <button
+                onClick={handleAcceptAll}
+                style={{
+                  width: '100%',
+                  padding: '0.45rem 0.75rem',
+                  background: '#1a7a1a',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  fontWeight: 600,
+                  fontSize: '0.85rem',
+                  cursor: 'pointer',
+                }}
+              >
+                Accept All Suggestions
+              </button>
+              <button
+                onClick={handleRejectAll}
+                style={{
+                  width: '100%',
+                  padding: '0.45rem 0.75rem',
+                  background: '#fff',
+                  color: '#d93025',
+                  border: '1px solid #d93025',
+                  borderRadius: '6px',
+                  fontWeight: 600,
+                  fontSize: '0.85rem',
+                  cursor: 'pointer',
+                }}
+              >
+                Reject All Suggestions
+              </button>
+            </div>
           ) : undefined}
         />
       )}
