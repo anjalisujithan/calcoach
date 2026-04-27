@@ -1,0 +1,10 @@
+[build]
+builder = "NIXPACKS"
+
+[build.nixpacksPlan.phases.install]
+cmds = ["pip install -r analytics/backend/requirements.txt"]
+
+[deploy]
+startCommand = "cd analytics/backend && uvicorn main:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/health"
+healthcheckTimeout = 30

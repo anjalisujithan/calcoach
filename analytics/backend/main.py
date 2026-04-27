@@ -14,14 +14,19 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
 # ── RL imports (optional — app degrades gracefully if not installed) ──────────
-# Register the repo root as the 'calcoach' package so all calcoach.* imports
-# work regardless of the directory name Railway/Vercel deploys the repo into
-# (locally the parent dir happens to be named "calcoach"; on Railway it's /app).
+# Walk upward from this file to find the repo root (identified by RL_exploration/).
+# This works regardless of the directory name or depth Railway deploys into.
 import importlib.util as _importlib_util
 import types as _types
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-if "calcoach" not in sys.modules:
+def _find_calcoach_root() -> Path | None:
+    for candidate in Path(__file__).resolve().parents:
+        if (candidate / "RL_exploration").is_dir():
+            return candidate
+    return None
+
+_REPO_ROOT = _find_calcoach_root()
+if _REPO_ROOT is not None and "calcoach" not in sys.modules:
     _pkg = _types.ModuleType("calcoach")
     _pkg.__path__ = [str(_REPO_ROOT)]
     _pkg.__file__ = str(_REPO_ROOT / "__init__.py")
