@@ -1610,7 +1610,6 @@ def _validate_scheduling_bundle(
     date_busy = _sessions_to_date_busy(sessions)
     clashes, clash_reason = _bundle_clashes_with_sessions(bundle, date_busy)
     if clashes:
-        print(f"[debug] FILTER clash: '{bundle.get('title')}' — {clash_reason}")
         return False, clash_reason, []
 
     # Hard check 2: all blocks must fall on or before the deadline date
@@ -1624,7 +1623,6 @@ def _validate_scheduling_bundle(
                     f"Block on {block_date} is after the deadline {deadline_date}. "
                     "All blocks must be scheduled on or before the deadline."
                 )
-                print(f"[debug] FILTER deadline: '{bundle.get('title')}' — {reason}")
                 return False, reason, []
 
     # Hard check 3: total duration must match what the user requested
@@ -1635,7 +1633,6 @@ def _validate_scheduling_bundle(
                 f"Duration mismatch: blocks total {actual_minutes}min but {target_minutes}min is required. "
                 "Adjust block durationMins so they sum to the requested total."
             )
-            print(f"[debug] FILTER duration: '{bundle.get('title')}' — {reason}")
             return False, reason, []
 
     # Hard check 4: work hours / avoid days via ScheduleValidator.
@@ -1653,7 +1650,6 @@ def _validate_scheduling_bundle(
         ok_b, br = validator.validate_block(block, free_windows, task.deadline_day)
         if not ok_b:
             bad_parts.append((i, br))
-    print(f"[debug] FILTER validator: '{bundle.get('title')}' — {reason}" + (f" | blocks: {bad_parts}" if bad_parts else ""))
     return False, reason, bad_parts
 
 
@@ -2036,8 +2032,6 @@ async def _repair_scheduling_until_viable(
 
     # For multi-task, each bundle is a different task so skip shared-duration enforcement.
     target_minutes = None if is_multi_task else _target_duration_from_bundles(initial_bundles)
-    if target_minutes:
-        print(f"[schedule] target_minutes={target_minutes}")
 
     def _absorb(bundles: List[dict]) -> None:
         for b in bundles:
@@ -2082,9 +2076,6 @@ async def _repair_scheduling_until_viable(
     repair_round = 0
     while len(viable_acc) < target_count and repair_round < SCHEDULING_REPAIR_MAX_ROUNDS:
         repair_round += 1
-        import time as _time
-        _t0 = _time.time()
-        print(f"[schedule] repair round {repair_round}/{SCHEDULING_REPAIR_MAX_ROUNDS} — viable so far: {len(viable_acc)}/{target_count}")
         avail_txt = _format_date_specific_availability(sessions, prefs, days_ahead=21)
         diag = _diagnose_bundles_for_prompt(bundles_in, sessions, prefs, target_minutes=target_minutes)
         valid_json = ""
@@ -2124,7 +2115,6 @@ async def _repair_scheduling_until_viable(
             response_format={"type": "json_object"},
         )
         current_raw = comp.choices[0].message.content
-        print(f"[schedule] repair round {repair_round} took {_time.time() - _t0:.1f}s")
         try:
             current_parsed = json.loads(current_raw)
         except json.JSONDecodeError:
@@ -2142,11 +2132,7 @@ async def _repair_scheduling_until_viable(
         bundles_in = next_bundles
         _absorb(bundles_in)
         if not bundles_in:
-            print("[schedule] repair returned no candidate_slots; stopping")
             break
-
-    if repair_round > 0:
-        print(f"[schedule] repair_rounds={repair_round} viable={len(viable_acc)}")
     return viable_acc, reply_acc, current_raw
 
 
@@ -2241,9 +2227,6 @@ async def chat(body: ChatMessage):
 
     # Combined sessions = requesting user + all attendees (used for clash detection + LLM prompt)
     combined_sessions = requester_sessions + attendee_sessions
-    print(f"[debug] {len(combined_sessions)} calendar events loaded:")
-    for _s in combined_sessions:
-        print(f"  {_s.get('date')} {_s.get('startHour',0):02d}:{_s.get('startMin',0):02d}+{_s.get('durationMins',0)}min  {_s.get('title','(no title)')}")
 
     # ── Multi-task mode (sequential per-task LLM calls) ───────────────────────
     is_multi_task = len(body.tasks) >= 2
@@ -2391,7 +2374,6 @@ async def chat(body: ChatMessage):
     )
 
     raw = completion.choices[0].message.content
-    print(f"[debug] LLM raw output:\n{raw}")
     reply = raw
     events: List[CalendarEvent] = []
     pending_suggestions: List[RankedSuggestion] = []
