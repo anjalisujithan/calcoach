@@ -305,7 +305,7 @@ async def _save_bandit_state(email: str) -> None:
 
 
 async def _load_bandit_state(email: str) -> None:
-    """Load bandit state from Firestore into the in-memory user profile."""
+    """Load bandit state and saved preferences from Firestore into the in-memory user profile."""
     if not _RL_AVAILABLE or _user_profile is None:
         return
     try:
@@ -314,6 +314,32 @@ async def _load_bandit_state(email: str) -> None:
         doc = await doc_ref.get()
         if doc.exists:
             data = doc.to_dict() or {}
+
+            # Restore preferences from saved survey answers so they survive restarts
+            survey = data.get("survey_answers") or {}
+            if survey:
+                try:
+                    work_start_h = int(survey.get("workStartHour", 9))
+                    work_end_h = int(survey.get("workEndHour", 21))
+                    _user_profile.preferences.work_start = f"{work_start_h:02d}:00"
+                    _user_profile.preferences.work_end = f"{work_end_h:02d}:00"
+                    _user_profile.preferences.max_daily_work_minutes = (work_end_h - work_start_h) * 60
+
+                    work_days = survey.get("workDays") or []
+                    if "weekdays" in work_days and "weekends" not in work_days:
+                        _user_profile.preferences.avoid_days = ["Saturday", "Sunday"]
+                    elif "weekends" in work_days and "weekdays" not in work_days:
+                        _user_profile.preferences.avoid_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+
+                    chunk_map = {"15_30": (15, 30), "30_60": (30, 60), "60_90": (60, 90), "90_plus": (90, 180)}
+                    pref_chunk, _ = chunk_map.get(survey.get("chunkSize", ""), (45, 90))
+                    _user_profile.preferences.preferred_chunk_minutes = pref_chunk
+
+                    print(f"[RL] Restored preferences for {email}: work={_user_profile.preferences.work_start}–{_user_profile.preferences.work_end}, chunk={pref_chunk}min, avoid={_user_profile.preferences.avoid_days}")
+                except Exception as pref_err:
+                    print(f"[RL] Failed to restore preferences for {email}: {pref_err}")
+
+            # Restore bandit state
             bs_json = data.get("bandit_state_json")
             if bs_json:
                 bs = json.loads(bs_json)
@@ -969,6 +995,7 @@ def _build_system_prompt(
     sessions: List[dict],
     reflections: List[dict],
     user_ai_summary: str = "",
+    prefs=None,  # Optional[UserPreferences]
 ) -> str:
     now = datetime.now(timezone.utc)
     today = now.strftime("%A, %B %d, %Y")
@@ -1001,6 +1028,25 @@ def _build_system_prompt(
 
     summary_block = user_ai_summary.strip() if user_ai_summary else "(none available)"
 
+    # Build scheduling preferences block from UserPreferences if available
+    if prefs is not None:
+        chunk = prefs.preferred_chunk_minutes
+        if chunk <= 30:
+            chunk_desc = f"short ({chunk} min) — always split large tasks into {chunk}-min blocks"
+        elif chunk <= 60:
+            chunk_desc = f"medium ({chunk} min) — split tasks longer than {chunk} min into multiple blocks"
+        else:
+            chunk_desc = f"long ({chunk} min) — prefer single focused blocks up to {chunk} min"
+        prefs_block = (
+            f"  Work hours: {prefs.work_start}–{prefs.work_end}\n"
+            f"  Days to avoid: {', '.join(prefs.avoid_days) if prefs.avoid_days else 'none'}\n"
+            f"  Preferred chunk size: {chunk_desc}\n"
+            f"  Max work per day: {prefs.max_daily_work_minutes} min\n"
+            f"  Buffer between events: {prefs.buffer_minutes} min"
+        )
+    else:
+        prefs_block = "  (not set — use calendar availability to infer)"
+
     return f"""You are CalCoach, an AI scheduling assistant. Today is {today}.
 
 CURRENT CALENDAR:
@@ -1015,9 +1061,17 @@ RECENT REFLECTIONS (productivity ratings and notes from past sessions):
 USER PROFILE SUMMARY (use this to infer preferences and personalize recommendations):
 {summary_block}
 
+USER SCHEDULING PREFERENCES (hard constraints and style — follow these when generating candidate_slots):
+{prefs_block}
+
+CHUNKING RULE: If the total duration requested exceeds the user's preferred chunk size, you MUST
+split the work across multiple blocks in at least one option. Use the "blocks" array for multi-block
+options. Each block should be close to the preferred chunk size. Never schedule a single block
+longer than 2× the preferred chunk size unless the total task is that short.
+
 Use the calendar and reflections to give personalized, context-aware scheduling advice.
-When making recommendations, infer likely preferences from the user profile summary
-and combine them with the real schedule availability shown above.
+When making recommendations, follow the scheduling preferences above and combine them
+with the real schedule availability shown above.
 Do not invent constraints that conflict with known busy/free windows.
 
 If user profile summary and calendar availability conflict, prioritize calendar
@@ -1149,6 +1203,19 @@ async def _load_user_ai_summary(user_email: str) -> str:
 
 def _is_scheduling_request(message: str) -> bool:
     return bool(_SCHED_INTENT_RE.search(message or ""))
+
+
+_CONSECUTIVE_RE = re.compile(
+    r"\b(consecutively|consecutive|in one go|all at once|back[- ]?to[- ]?back"
+    r"|without break|don'?t break|do not break|no break|single block"
+    r"|one block|one session|in a row|uninterrupted)\b",
+    re.IGNORECASE,
+)
+
+
+def _wants_consecutive(message: str) -> bool:
+    """Return True if the user explicitly asked to NOT split the session."""
+    return bool(_CONSECUTIVE_RE.search(message or ""))
 
 
 def _fetch_attendee_sessions(tokens: dict) -> List[dict]:
@@ -1800,6 +1867,153 @@ def _format_bundle_summary(bundle: dict) -> str:
     return f"{len(parts)} blocks, {total_m} min total — " + "; ".join(bits)
 
 
+
+def _build_server_side_scheduling_options(
+    sessions: List[dict],
+    prefs: "UserPreferences",
+    total_minutes: int,
+    deadline_date: Optional[str],
+    task_title: str = "Task",
+    task_description: str = "",
+    n_options: int = TARGET_VIABLE_SUGGESTIONS,
+) -> List[dict]:
+    """
+    Equal-daily-split scheduling (deterministic, no LLM).
+
+    Divides total_minutes equally across all available days until deadline.
+    Each day gets exactly one slot sized proportionally. Returns up to
+    n_options scheduling variants (morning-first, afternoon-first, tomorrow-start).
+    Returns fewer (or empty) when the calendar can't absorb the time.
+    """
+    now = datetime.now(timezone.utc)
+    try:
+        ws_h, ws_m = map(int, prefs.work_start.split(":"))
+        we_h, we_m = map(int, prefs.work_end.split(":"))
+    except Exception:
+        ws_h, ws_m, we_h, we_m = 9, 0, 21, 0
+    work_start_min = ws_h * 60 + ws_m
+    work_end_min = we_h * 60 + we_m
+    date_busy = _sessions_to_date_busy(sessions)
+
+    # Build ordered list of candidate days up to deadline
+    if deadline_date:
+        try:
+            dl = datetime.strptime(deadline_date, "%Y-%m-%d").date()
+            days_ahead = max((dl - now.date()).days + 1, 1)
+        except Exception:
+            days_ahead = 21
+    else:
+        days_ahead = 21
+
+    candidate_days: List[Tuple[str, str]] = []  # (date_str, weekday_name)
+    for i in range(days_ahead):
+        day = now + timedelta(days=i)
+        date_str = day.strftime("%Y-%m-%d")
+        if deadline_date and date_str > deadline_date:
+            break
+        weekday = day.strftime("%A")
+        if _RL_AVAILABLE and prefs.avoid_days and weekday in prefs.avoid_days:
+            continue
+        candidate_days.append((date_str, weekday))
+
+    if not candidate_days:
+        return []
+
+    def free_windows(date_str: str) -> List[Tuple[int, int]]:
+        """Return free (start_min, end_min) windows within work hours for a day."""
+        busy = sorted(date_busy.get(date_str, []))
+        pos = work_start_min
+        wins: List[Tuple[int, int]] = []
+        for bs, be in busy:
+            bs = max(bs, work_start_min)
+            be = min(be, work_end_min)
+            if bs > pos:
+                wins.append((pos, bs))
+            pos = max(pos, be)
+        if pos < work_end_min:
+            wins.append((pos, work_end_min))
+        return wins
+
+    def find_slot(wins: List[Tuple[int, int]], duration: int, prefer_late: bool = False) -> Optional[int]:
+        """Return start_minute for a contiguous slot of `duration` mins, or None."""
+        viable = [w_start for w_start, w_end in wins if w_end - w_start >= duration]
+        if not viable:
+            return None
+        return viable[-1] if prefer_late else viable[0]
+
+    def build_option(prefer_late: bool, skip_first: int, reasoning: str) -> Optional[dict]:
+        """Build one scheduling bundle. Each available day gets a proportional slot."""
+        days = candidate_days[skip_first:]
+        if not days:
+            return None
+        parts: List[dict] = []
+        remaining = total_minutes
+        n = len(days)
+        # Round base per-day allocation down to nearest 15 min for clean blocks.
+        # The last scheduled day absorbs whatever remainder is left.
+        SLOT_ROUND = 15
+        base_day_mins = max(SLOT_ROUND, (total_minutes // n // SLOT_ROUND) * SLOT_ROUND)
+        for idx, (date_str, _) in enumerate(days):
+            if remaining <= 0:
+                break
+            is_last_candidate = (idx == n - 1)
+            # Last candidate day takes all remaining time (may be slightly larger);
+            # every other day gets the rounded base allocation.
+            day_mins = remaining if is_last_candidate else base_day_mins
+            wins = free_windows(date_str)
+            slot_start = find_slot(wins, day_mins, prefer_late)
+            if slot_start is None:
+                if not is_last_candidate:
+                    continue  # day too busy — carry forward to next
+                # Last day can't fit all remaining; try just the base amount
+                slot_start = find_slot(wins, min(base_day_mins, remaining), prefer_late)
+                if slot_start is None:
+                    break
+                day_mins = min(base_day_mins, remaining)
+            h, m = divmod(slot_start, 60)
+            parts.append({
+                "title": task_title, "description": task_description,
+                "date": date_str, "startHour": h, "startMin": m, "durationMins": day_mins,
+            })
+            remaining -= day_mins
+
+        if remaining > 0 or not parts:
+            return None  # couldn't fit all time
+        dl = deadline_date or max(p["date"] for p in parts)
+        return {
+            "title": task_title, "description": task_description,
+            "reasoning": reasoning, "deadline_date": dl, "parts": parts,
+        }
+
+    options: List[dict] = []
+    seen_keys: set = set()
+
+    def try_add(opt: Optional[dict]) -> None:
+        if opt is None or len(options) >= n_options:
+            return
+        key = tuple((p["date"], p["startHour"], p["startMin"]) for p in opt["parts"])
+        if key in seen_keys:
+            return
+        seen_keys.add(key)
+        options.append(opt)
+
+    # Option A: earliest slot each day
+    try_add(build_option(False, 0, "Earliest available time each day, spread equally to deadline"))
+    # Option B: latest slot each day (afternoons)
+    try_add(build_option(True, 0, "Later sessions each day, spread equally to deadline"))
+    # Option C: start tomorrow (gives today as free time)
+    if len(candidate_days) > 1:
+        try_add(build_option(False, 1, "Starting tomorrow, earliest available windows each day"))
+
+    return options
+
+
+def _deadline_from_bundles(bundles: List[dict]) -> Optional[str]:
+    """Extract the earliest deadline_date from a list of bundles, or None."""
+    dates = [b.get("deadline_date") for b in bundles if b.get("deadline_date")]
+    return min(dates) if dates else None
+
+
 async def _repair_scheduling_until_viable(
     client: AsyncGroq,
     messages_base: list,
@@ -2049,7 +2263,7 @@ async def chat(body: ChatMessage):
             # Each task is scheduled independently against the real calendar.
             # We show TARGET_VIABLE_SUGGESTIONS alternatives per task so the user
             # can pick their preferred slot for each one.
-            task_sys = _build_system_prompt(combined_sessions, body.reflections, user_ai_summary=requester_ai_summary)
+            task_sys = _build_system_prompt(combined_sessions, body.reflections, user_ai_summary=requester_ai_summary, prefs=_prefs_for_validation())
             task_sys += (
                 f"\n\nSchedule {TARGET_VIABLE_SUGGESTIONS} different time options for this task: {task_name}"
                 + (f" ({task_duration})" if task_duration else "")
@@ -2160,6 +2374,7 @@ async def chat(body: ChatMessage):
         combined_sessions,
         body.reflections,
         user_ai_summary=requester_ai_summary,
+        prefs=_prefs_for_validation(),
     )
     if valid_attendee_emails and attendee_sessions:
         names = ", ".join(valid_attendee_emails)
@@ -2197,34 +2412,76 @@ async def chat(body: ChatMessage):
 
             ranked_bundles: List[dict] = []
             if bundles_in and _RL_AVAILABLE and ScheduleValidator is not None:
-                try:
-                    viable, reply, _ = await _repair_scheduling_until_viable(
-                        client, messages, combined_sessions, bundles_in, raw, parsed,
-                        target_count=n_suggestions_target,
-                        is_multi_task=is_multi_task,
+                prefs_now = _prefs_for_validation()
+                _target_min = _target_duration_from_bundles(bundles_in)
+                _deadline_str = _deadline_from_bundles(bundles_in)
+                _chunk_mins = getattr(prefs_now, "preferred_chunk_minutes", 90)
+                _task_title = bundles_in[0].get("title", "Task") if bundles_in else "Task"
+                _task_desc = bundles_in[0].get("description", "") if bundles_in else ""
+
+                # ── Fast path: server-side scheduling (no repair loop) ──────────────
+                # Used when we know total_minutes and the task needs multiple chunks.
+                # Priority order (per spec): deadline → chunk size → work hours.
+                # Returns however many options fit (0–3); if 0 tell user directly.
+                server_options: List[dict] = []
+                _consecutive_requested = _wants_consecutive(body.message)
+                _needs_split = _target_min and _target_min > _chunk_mins and not _consecutive_requested
+                if _needs_split and not is_multi_task:
+                    server_options = _build_server_side_scheduling_options(
+                        combined_sessions, prefs_now,
+                        total_minutes=_target_min,
+                        deadline_date=_deadline_str,
+                        task_title=_task_title,
+                        task_description=_task_desc,
+                        n_options=n_suggestions_target,
                     )
+                    if server_options:
+                        print(f"[schedule] server-side: {len(server_options)} option(s) for {_target_min}min task")
+
+                if server_options:
+                    viable = server_options
                     ranked_bundles = _rank_slots(
                         viable, requester_sessions,
                         attendee_profile=attendee_profile,
                         attendee_sessions=attendee_sessions if attendee_sessions else None,
                     )
                     ranked_bundles = ranked_bundles[:n_suggestions_target]
-                    if len(ranked_bundles) < n_suggestions_target:
+                    if len(ranked_bundles) == 0:
                         reply = (
-                            f"{reply}\n\n_Note: Only {len(ranked_bundles)} clash-free option(s) fit "
-                            + ("all calendars" if valid_attendee_emails else "your calendar")
-                            + " after validation._"
+                            f"I couldn't find any free {_chunk_mins}-minute slots"
+                            + (f" before your deadline ({_deadline_str})" if _deadline_str else " in the next 3 weeks")
+                            + " that fit your schedule. Try adjusting your work hours, chunk size, or deadline."
                         )
-                except Exception as repair_err:
-                    import traceback
-                    print(f"[chat] repair/validation error, falling back to direct ranking: {repair_err}")
-                    traceback.print_exc()
-                    ranked_bundles = _rank_slots(
-                        bundles_in, requester_sessions,
-                        attendee_profile=attendee_profile,
-                        attendee_sessions=attendee_sessions if attendee_sessions else None,
-                    )
-                    ranked_bundles = ranked_bundles[:n_suggestions_target]
+                    elif len(ranked_bundles) < n_suggestions_target:
+                        cal_str = "all calendars" if valid_attendee_emails else "your calendar"
+                        reply = f"{reply}\n\n_Note: Only {len(ranked_bundles)} clash-free option(s) fit {cal_str} given your preferences._"
+                else:
+                    # ── Repair-loop fallback (small tasks / joint scheduling) ─────
+                    try:
+                        viable, reply, _ = await _repair_scheduling_until_viable(
+                            client, messages, combined_sessions, bundles_in, raw, parsed,
+                            target_count=n_suggestions_target,
+                            is_multi_task=is_multi_task,
+                        )
+                        ranked_bundles = _rank_slots(
+                            viable, requester_sessions,
+                            attendee_profile=attendee_profile,
+                            attendee_sessions=attendee_sessions if attendee_sessions else None,
+                        )
+                        ranked_bundles = ranked_bundles[:n_suggestions_target]
+                        if len(ranked_bundles) < n_suggestions_target:
+                            cal_str = "all calendars" if valid_attendee_emails else "your calendar"
+                            reply = f"{reply}\n\n_Note: Only {len(ranked_bundles)} clash-free option(s) fit {cal_str} after validation._"
+                    except Exception as repair_err:
+                        import traceback
+                        print(f"[chat] repair/validation error, falling back to direct ranking: {repair_err}")
+                        traceback.print_exc()
+                        ranked_bundles = _rank_slots(
+                            bundles_in, requester_sessions,
+                            attendee_profile=attendee_profile,
+                            attendee_sessions=attendee_sessions if attendee_sessions else None,
+                        )
+                        ranked_bundles = ranked_bundles[:n_suggestions_target]
             else:
                 ranked_bundles = _rank_slots(bundles_in, requester_sessions) if bundles_in else []
                 ranked_bundles = ranked_bundles[:n_suggestions_target]
