@@ -64,6 +64,111 @@ function googleEventToSession(event: any): Session | null {
   };
 }
 
+// Defensive cleanup for the events_to_create payload coming back from /chat.
+// The model occasionally emits sibling COUNT/UNTIL fields instead of folding them
+// into the RRULE string, and sometimes ships a recurrence rule without a date or
+// start time. We move COUNT/UNTIL into the RRULE and drop entries that are missing
+// the bits the calendar backend requires (it would 422 anyway).
+function sanitizeRecurringEvent(event: any): any | null {
+  if (!event || typeof event !== 'object') return null;
+  const out: any = { ...event };
+
+  let recurrence: string[] = Array.isArray(out.recurrence)
+    ? [...out.recurrence]
+    : typeof out.recurrence === 'string'
+      ? [out.recurrence]
+      : [];
+
+  if (recurrence.length > 0) {
+    let rule = String(recurrence[0] || '').trim();
+    if (rule && !/^RRULE:/i.test(rule)) rule = `RRULE:${rule}`;
+    const folded = (key: string) => {
+      const v = out[key];
+      if (v == null || v === '') return;
+      if (rule && !new RegExp(`(^|;)${key}=`, 'i').test(rule)) {
+        rule = `${rule};${key}=${v}`;
+      }
+      delete out[key];
+    };
+    folded('COUNT'); folded('UNTIL'); folded('FREQ'); folded('BYDAY'); folded('INTERVAL');
+    recurrence = rule ? [rule] : [];
+    out.recurrence = recurrence;
+  }
+
+  const hasRecurrence = recurrence.length > 0;
+  const missingDate = !out.date || typeof out.date !== 'string';
+  const missingStart = out.startHour == null || out.startMin == null;
+  const missingDuration = !out.durationMins;
+
+  if (missingDate || missingStart || missingDuration) {
+    if (hasRecurrence) return null; // partial recurring event — surface a clarification instead
+    return null;
+  }
+  return out;
+}
+
+// Visual fan-out for a recurring suggestion: given the master block (with its
+// RRULE), generate up to `maxOccurrences` upcoming preview blocks so the user can
+// see the proposed series painted across the calendar before accepting. The
+// previews are display-only — `pendingSlotMap` still stores just the master, so
+// accept POSTs a single recurring event (not one POST per preview).
+const RRULE_BYDAY_TO_INDEX: Record<string, number> = {
+  SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6,
+};
+
+function expandRecurringPreview(master: any, maxOccurrences: number = 8): any[] {
+  if (!master || !master.date) return [master];
+  const recArr: string[] = Array.isArray(master.recurrence) ? master.recurrence : [];
+  const rrule = (recArr[0] || '').toString();
+  if (!rrule) return [master];
+
+  const bydayMatch = /BYDAY=([A-Z,]+)/i.exec(rrule);
+  const untilMatch = /UNTIL=(\d{8})/i.exec(rrule);
+  const countMatch = /COUNT=(\d+)/i.exec(rrule);
+  const dailyMatch = /FREQ=DAILY/i.test(rrule);
+
+  const start = new Date(`${master.date}T00:00:00`);
+  if (Number.isNaN(start.getTime())) return [master];
+
+  let targetWeekdays: number[] = [];
+  if (bydayMatch) {
+    targetWeekdays = bydayMatch[1].split(',')
+      .map(c => RRULE_BYDAY_TO_INDEX[c.trim().toUpperCase()])
+      .filter(d => d !== undefined);
+  } else if (dailyMatch) {
+    targetWeekdays = [0, 1, 2, 3, 4, 5, 6];
+  } else {
+    targetWeekdays = [start.getDay()];
+  }
+  if (targetWeekdays.length === 0) targetWeekdays = [start.getDay()];
+
+  let untilDate: Date | null = null;
+  if (untilMatch) {
+    const u = untilMatch[1];
+    const dt = new Date(`${u.slice(0, 4)}-${u.slice(4, 6)}-${u.slice(6, 8)}T23:59:59`);
+    if (!Number.isNaN(dt.getTime())) untilDate = dt;
+  }
+  const limit = countMatch
+    ? Math.min(parseInt(countMatch[1], 10), maxOccurrences)
+    : maxOccurrences;
+
+  const occurrences: any[] = [];
+  const cursor = new Date(start);
+  let safety = 0;
+  while (occurrences.length < limit && safety < 90) {
+    safety += 1;
+    if (untilDate && cursor > untilDate) break;
+    if (cursor >= start && targetWeekdays.includes(cursor.getDay())) {
+      const yyyy = cursor.getFullYear();
+      const mm = String(cursor.getMonth() + 1).padStart(2, '0');
+      const dd = String(cursor.getDate()).padStart(2, '0');
+      occurrences.push({ ...master, date: `${yyyy}-${mm}-${dd}` });
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return occurrences.length > 0 ? occurrences : [master];
+}
+
 function sessionToPayload(s: Omit<Session, 'id'>) {
   return {
     title: s.title,
@@ -408,13 +513,22 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
               : [suggestion.slot];
           const taskIndex: number = suggestion.task_index ?? 0;
           const groupId = mkId();
+          // For recurring suggestions, the master event(s) carry an RRULE — those
+          // are what we POST on accept (one POST creates the whole series). The
+          // visual preview blocks are generated separately so the user can see
+          // the series painted across the calendar before approving.
+          const isRecurringSuggestion = events.some((e: any) => Array.isArray(e.recurrence) && e.recurrence.length > 0);
+          const visualBlocks: any[] = isRecurringSuggestion && events.length === 1
+            ? expandRecurringPreview(events[0], 8)
+            : events;
           pendingSlotMap.current.set(groupId, { slotIndex: suggestion.rank - 1, events, attendeeEmails, isMultiTask, taskIndex });
           const blockColor = isMultiTask
             ? TASK_COLORS[taskIndex % TASK_COLORS.length]
             : OPTION_COLORS[(suggestion.rank - 1) % OPTION_COLORS.length];
-          const taskLabel = isMultiTask && suggestion.task_name ? `${suggestion.task_name} #${suggestion.rank}` : `#${suggestion.rank} ${events[0]?.title ?? ''}`;
+          const baseTitle = visualBlocks[0]?.title ?? events[0]?.title ?? '';
+          const taskLabel = isMultiTask && suggestion.task_name ? `${suggestion.task_name} #${suggestion.rank}` : `#${suggestion.rank} ${baseTitle}`;
 
-          events.forEach((event: any, i: number) => {
+          visualBlocks.forEach((event: any, i: number) => {
             const pendingId = mkId();
             pendingSessionToGroup.current.set(pendingId, groupId);
             toAdd.push({
@@ -441,7 +555,13 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
       const newEvents = data.events_to_create ?? [];
       if (newEvents.length > 0) {
         let hasRecurring = false;
-        for (const event of newEvents) {
+        let droppedCount = 0;
+        for (const rawEvent of newEvents) {
+          const event = sanitizeRecurringEvent(rawEvent);
+          if (!event) {
+            droppedCount += 1;
+            continue;
+          }
           const recurrence: string[] = event.recurrence ?? [];
           if (recurrence.length > 0) hasRecurring = true;
           await handleAddSession({
@@ -458,6 +578,13 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
         }
         // Resync to load all expanded instances from GCal
         if (hasRecurring) fetchEvents();
+        if (droppedCount > 0) {
+          setMessages(m => [...m, {
+            id: mkId(),
+            role: 'assistant',
+            text: "I had the recurrence rule but I'm missing the start time or duration. What time should it run and how long is each session?",
+          }]);
+        }
       }
     } catch (err: any) {
       const reason = abortReason.current;
@@ -524,10 +651,15 @@ export default function CalendarTab({ reflections, onSaveReflection, onSessionsC
           const taskIndex: number = suggestion.task_index ?? 0;
           const taskAttendees: string[] = tasks[taskIndex]?.attendees ?? [];
           const groupId = mkId();
+          const isRecurringSuggestion = events.some((e: any) => Array.isArray(e.recurrence) && e.recurrence.length > 0);
+          const visualBlocks: any[] = isRecurringSuggestion && events.length === 1
+            ? expandRecurringPreview(events[0], 8)
+            : events;
           pendingSlotMap.current.set(groupId, { slotIndex: suggestion.rank - 1, events, attendeeEmails: taskAttendees, isMultiTask: true, taskIndex });
           const blockColor = TASK_COLORS[taskIndex % TASK_COLORS.length];
-          const taskLabel = suggestion.task_name ? `${suggestion.task_name} #${suggestion.rank}` : `#${suggestion.rank} ${events[0]?.title ?? ''}`;
-          events.forEach((event: any, i: number) => {
+          const baseTitle = visualBlocks[0]?.title ?? events[0]?.title ?? '';
+          const taskLabel = suggestion.task_name ? `${suggestion.task_name} #${suggestion.rank}` : `#${suggestion.rank} ${baseTitle}`;
+          visualBlocks.forEach((event: any, i: number) => {
             const pendingId = mkId();
             pendingSessionToGroup.current.set(pendingId, groupId);
             toAdd.push({

@@ -188,6 +188,7 @@ function MentionInput({ placeholder, mentionSearchEndpoint, currentUserEmail, on
             <div
               key={u.email}
               className={`mention-option${i === idx && u.hasCalendar ? ' mention-option--active' : ''}${!u.hasCalendar ? ' mention-option--disabled' : ''}`}
+              onMouseEnter={() => u.hasCalendar && setIdx(i)}
               onMouseDown={e => { e.preventDefault(); insertMention(u); }}
               title={!u.hasCalendar ? 'This user has not connected Google Calendar' : undefined}
             >
@@ -585,22 +586,24 @@ export default function ChatBar({ headerLabel, placeholder, messages, onSend, on
             )}
           </div>
         )}
-        {showDropdown && (
-          <div className="mention-dropdown">
-            {mentionResults.map((u, i) => (
-              <div
-                key={u.email}
-                className={`mention-option${i === mentionIndex && u.hasCalendar ? ' mention-option--active' : ''}${!u.hasCalendar ? ' mention-option--disabled' : ''}`}
-                onMouseDown={e => { e.preventDefault(); insertMention(u); }}
-                title={!u.hasCalendar ? 'This user has not connected Google Calendar' : undefined}
-              >
-                <span className="mention-option-name">{u.displayName || u.email}</span>
-                <span className="mention-option-email">{u.email}</span>
-                {!u.hasCalendar && <span className="mention-option-tag">No calendar</span>}
-              </div>
-            ))}
-          </div>
-        )}
+        <div style={{ position: 'relative' }}>
+          {showDropdown && (
+            <div className="mention-dropdown" style={{ bottom: '100%', top: 'auto', marginBottom: 4 }}>
+              {mentionResults.map((u, i) => (
+                <div
+                  key={u.email}
+                  className={`mention-option${i === mentionIndex && u.hasCalendar ? ' mention-option--active' : ''}${!u.hasCalendar ? ' mention-option--disabled' : ''}`}
+                  onMouseEnter={() => u.hasCalendar && setMentionIndex(i)}
+                  onMouseDown={e => { e.preventDefault(); insertMention(u); }}
+                  title={!u.hasCalendar ? 'This user has not connected Google Calendar' : undefined}
+                >
+                  <span className="mention-option-name">{u.displayName || u.email}</span>
+                  <span className="mention-option-email">{u.email}</span>
+                  {!u.hasCalendar && <span className="mention-option-tag">No calendar</span>}
+                </div>
+              ))}
+            </div>
+          )}
         <div className="chat-input-row">
           <div className="chat-textarea-wrapper">
             <div
@@ -633,6 +636,7 @@ export default function ChatBar({ headerLabel, placeholder, messages, onSend, on
               </button>
             )}
           </div>
+        </div>
         </div>
       </div>
     </div>
