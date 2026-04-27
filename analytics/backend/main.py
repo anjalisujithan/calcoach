@@ -3086,43 +3086,6 @@ async def chat(body: ChatMessage):
             else:
                 ranked_bundles = _rank_slots(bundles_in, requester_sessions) if bundles_in else []
                 ranked_bundles = ranked_bundles[:n_suggestions_target]
-                # If the LLM returned fewer than target, do one lightweight re-prompt
-                # (this path runs when RL packages are unavailable, e.g. on Railway)
-                if bundles_in and len(ranked_bundles) < n_suggestions_target:
-                    n_have = len(ranked_bundles)
-                    n_need = n_suggestions_target - n_have
-                    simple_repair_msg = (
-                        f"You returned {n_have} scheduling option(s) but I need exactly "
-                        f"{n_suggestions_target}. Please provide {n_need} more distinct "
-                        f"option(s) at different times. Return JSON with the same schema "
-                        f"(reply + candidate_slots) and include all {n_suggestions_target} "
-                        "options in candidate_slots."
-                    )
-                    try:
-                        repair_comp = await client.chat.completions.create(
-                            model="meta-llama/llama-4-scout-17b-16e-instruct",
-                            messages=messages + [
-                                {"role": "assistant", "content": raw},
-                                {"role": "user", "content": simple_repair_msg},
-                            ],
-                            response_format={"type": "json_object"},
-                        )
-                        repair_raw = repair_comp.choices[0].message.content
-                        repair_parsed = json.loads(repair_raw)
-                        repair_slots = repair_parsed.get("candidate_slots", [])
-                        existing_fps = {_bundle_fingerprint(b) for b in ranked_bundles}
-                        for x in (repair_slots if isinstance(repair_slots, list) else []):
-                            if isinstance(x, dict):
-                                nb = _normalize_scheduling_candidate(x)
-                                if nb and _bundle_fingerprint(nb) not in existing_fps:
-                                    ranked_bundles.append(nb)
-                                    existing_fps.add(_bundle_fingerprint(nb))
-                                if len(ranked_bundles) >= n_suggestions_target:
-                                    break
-                        ranked_bundles = ranked_bundles[:n_suggestions_target]
-                        print(f"[chat] Simple repair: now have {len(ranked_bundles)} options")
-                    except Exception as _repair_err:
-                        print(f"[chat] Simple repair failed: {_repair_err}")
 
             if not is_recurring_request:
                 # Final clash filter against both users' events (recurring bundles
