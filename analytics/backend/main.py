@@ -1215,7 +1215,7 @@ Always respond with valid JSON in exactly this format:
 ONLY fill "candidate_slots" when the user's CURRENT message explicitly asks to SCHEDULE, ADD, BOOK, or CREATE a new calendar event — i.e. the message contains a clear intent to place something new on the calendar (words like "schedule", "add", "book", "create", "set up", "block out", "find time for"). Conversational messages, follow-up questions, clarifications, and reactions to previously shown options do NOT trigger scheduling — respond to those conversationally only.
 
 When filling "candidate_slots" (new scheduling request only):
-- Set "reply" to a brief sentence (e.g. "Here are 3 options for your CS homework:")
+- Set "reply" to a brief sentence naming the task only (e.g. "Here are some options for your CS homework:") — do NOT include a count in this sentence; the server will add the correct count
 - Provide exactly 3 alternative scheduling OPTIONS in "candidate_slots" — different strategies/days for the same task. The server validates against BUSY times: every block must lie entirely inside a FREE window (see follow-up messages if a revision is requested).
 - SINGLE continuous block per option: use top-level fields only: title, description, date (yyyy-MM-dd), startHour (0-23), startMin (0 or 30), durationMins, reasoning (1 sentence)
 - MULTI-BLOCK option format: ONE object with the same title/description/reasoning at the top level, plus a "blocks" array. Each block must have: date, startHour, startMin, durationMins (optional title/description override per block). Do NOT split one option into multiple top-level candidate_slots entries.
@@ -1326,7 +1326,7 @@ Only proceed with generating candidate_slots if:
 
 === GENERATING SUGGESTIONS (only when you have total time + deadline) ===
 
-- Set "reply" to a brief intro sentence only (e.g. "Here are 3 options for your CS185 project:")
+- Set "reply" to a brief intro sentence naming the task only (e.g. "Here are some options for your CS185 project:") — do NOT include a count; the server will add the correct count
 - Provide exactly 3 alternative scheduling OPTIONS in "candidate_slots"
 - SINGLE continuous block per option: title, description, date (yyyy-MM-dd), startHour (0-23), startMin (0 or 30), durationMins, reasoning (1 sentence), deadline_date (yyyy-MM-dd)
 - MULTI-BLOCK option (e.g. 10 hours split into 2-hour sessions): ONE object with title/description/reasoning/deadline_date at top level, plus a "blocks" array. Each block: date, startHour, startMin, durationMins. Do NOT use multiple top-level entries for one option.
@@ -3148,10 +3148,11 @@ async def chat(body: ChatMessage):
             if pending_suggestions:
                 actual_count = len(pending_suggestions)
                 if actual_count < n_suggestions_target and reply_lines:
-                    # Model said "3 options" in its reply but fewer survived validation/parsing.
-                    # Fix the leading sentence so the count matches what's actually on the calendar.
+                    # Model may have written a count that doesn't match (e.g. "3 options" when
+                    # only 2 survived). Replace any standalone digit ≥ actual_count with the
+                    # real count so the intro sentence stays accurate.
                     reply_lines[0] = re.sub(
-                        r'\b3\b', str(actual_count), reply_lines[0], count=1
+                        r'\b[2-9]\b', str(actual_count), reply_lines[0], count=1
                     )
 
                 if is_recurring_request:
