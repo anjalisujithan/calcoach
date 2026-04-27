@@ -397,7 +397,7 @@ async def _update_user_summary(user_id: str) -> None:
         completion = await client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You are CalCoach, a productivity coach. Always respond with valid JSON only."},
+                {"role": "system", "content": "You are CalCoach, a warm and supportive productivity coach. Always respond with valid JSON only."},
                 {"role": "user", "content": prompt},
             ],
             response_format={"type": "json_object"},
@@ -873,7 +873,7 @@ def _build_insights_prompt(reflections: List[dict], sessions: List[dict], user_t
 
     user_desc = f"a {user_type}" if user_type else "a student/professional"
 
-    return f"""You are CalCoach, a sharp and encouraging productivity coach. The user is {user_desc} who has logged {len(reflections)} work sessions.
+    return f"""You are CalCoach, a warm and supportive productivity coach. The user is {user_desc} who has logged {len(reflections)} work sessions.
 
 TOP SUBJECTS BY TIME:
 {subj_lines}
@@ -894,7 +894,7 @@ TOTAL CALENDAR TIME: {cal_line}
 RECENT SESSION NOTES FROM THE USER:
 {notes_lines}
 
-Your job is to deeply analyze user data for any patters and trends in their behaviour and provide helpful feedback on their productivity exclusively on scheduling tasks.
+Your job is to look for genuine patterns and trends in the user's data and share friendly, encouraging insights about their productivity and scheduling habits.
 
 Respond with ONLY a JSON object in exactly this format (no other keys):
 {{
@@ -904,18 +904,16 @@ Respond with ONLY a JSON object in exactly this format (no other keys):
 
 Rules for "feedback" (MUST be a plain string, NOT a JSON array):
 - A single string containing 3 bullet points, each starting with •, separated by newlines
-- Each bullet is an observation the user might not know, e.g. "• You seem to work more productively in the mornings — consider scheduling high-effort tasks before noon."
+- Each point is 1–2 sentences: lead with a genuine strength or positive observation, then frame any suggestion as an exciting opportunity (e.g. "you could unlock even more by…", "one small shift that might make a big difference…", "imagine what you could get done if…")
 - Reference actual subjects, hours, and days from the data
-- When providing a score analysis use a consistent float/float score, e.g. 4.5/5.0, 5.0/5.0 
-- Simple, friendly language; no clichés
+- When providing a score analysis use a consistent float/float score, e.g. 4.5/5.0, 5.0/5.0
+- Warm, conversational language; celebrate wins, never scold; no clichés
 - Under 220 words total
 
 Rules for "user_summary":
 - 3–4 sentences, third person, factual
 - Cover: who they are and what they work on, main subjects by time, peak hours and best days, any notable patterns
 - Used by the scheduling system to personalise future suggestions"""
-
-# - Each point is 1–2 sentences: lead with a genuine strength or positive observation, then frame any improvement as an exciting opportunity ("you could unlock even more by…", "imagine how much you'd get done if…", "one small shift that could make a big difference…")
 
 @app.post("/insights")
 async def get_insights(body: InsightsRequest):
@@ -938,7 +936,7 @@ async def get_insights(body: InsightsRequest):
         completion = await client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[
-                {"role": "system", "content": "You are CalCoach, a productivity coach. Always respond with valid JSON only."},
+                {"role": "system", "content": "You are CalCoach, a warm and supportive productivity coach. Always respond with valid JSON only."},
                 {"role": "user", "content": prompt},
             ],
             response_format={"type": "json_object"},
