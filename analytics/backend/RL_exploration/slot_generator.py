@@ -28,8 +28,8 @@ from __future__ import annotations
 from datetime import time
 from typing import Dict, List, Tuple
 
-from calcoach.user_profile import UserPreferences
-from calcoach.models import (
+from user_profile import UserPreferences
+from models import (
     Block,
     CandidateSchedule,
     DAY_ORDER,

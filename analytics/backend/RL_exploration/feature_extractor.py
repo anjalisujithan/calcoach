@@ -34,9 +34,9 @@ from typing import Dict, List
 
 import numpy as np
 
-from calcoach.models import CandidateSchedule, DAY_ORDER, TaskRequest
-from calcoach.user_profile import UserProfile
-from calcoach.RL_exploration.slot_generator import _parse_busy_slot, _parse_hhmm, _to_minutes
+from models import CandidateSchedule, DAY_ORDER, TaskRequest
+from user_profile import UserProfile
+from RL_exploration.slot_generator import _parse_busy_slot, _parse_hhmm, _to_minutes
 
 
 # ---------------------------------------------------------------------------

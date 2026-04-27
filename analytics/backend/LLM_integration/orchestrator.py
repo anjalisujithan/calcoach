@@ -15,7 +15,7 @@ Usage:
     ranked, contexts = pipeline.suggest("I need to write my lab report, 2 hours, due Friday")
 
     # After user picks suggestion at index i:
-    from calcoach.LLM_integration.reward_handler import FeedbackType
+    from LLM_integration.reward_handler import FeedbackType
     pipeline.record_feedback(contexts[i], FeedbackType.ACCEPTED, rank_of_chosen=i+1)
 """
 
@@ -25,14 +25,14 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from calcoach.LLM_integration.task_extractor import TaskExtractor
-from calcoach.LLM_integration.candidate_generator import CandidateGenerator
-from calcoach.LLM_integration.reward_handler import FeedbackType, compute_reward
-from calcoach.RL_exploration.slot_generator import ScheduleValidator
-from calcoach.RL_exploration.feature_extractor import extract
-from calcoach.RL_exploration.contextual_bandit import LinUCBBandit
-from calcoach.models import CandidateSchedule, TaskRequest
-from calcoach.user_profile.profile import UserProfile
+from LLM_integration.task_extractor import TaskExtractor
+from LLM_integration.candidate_generator import CandidateGenerator
+from LLM_integration.reward_handler import FeedbackType, compute_reward
+from RL_exploration.slot_generator import ScheduleValidator
+from RL_exploration.feature_extractor import extract
+from RL_exploration.contextual_bandit import LinUCBBandit
+from models import CandidateSchedule, TaskRequest
+from user_profile.profile import UserProfile
 
 
 class SchedulingPipeline:

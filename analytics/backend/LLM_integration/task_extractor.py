@@ -17,7 +17,7 @@ from datetime import datetime
 
 import anthropic
 
-from calcoach.models import TaskRequest, DAY_ORDER, MIN_VIABLE_CHUNK_MINUTES
+from models import TaskRequest, DAY_ORDER, MIN_VIABLE_CHUNK_MINUTES
 
 _SYSTEM_PROMPT = """\
 You are CalCoach, an AI scheduling assistant for students.

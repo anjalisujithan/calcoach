@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "analytics" / "backend"))
 
 # ── Fake calendar: some days busy, some free ─────────────────────────────────
 SAMPLE_CALENDAR = {
@@ -33,8 +36,8 @@ def main() -> None:
         sys.exit(1)
 
     # ── Build a minimal user profile ─────────────────────────────────────────
-    from calcoach.user_profile.preferences import UserPreferences
-    from calcoach.user_profile.profile import UserProfile
+    from user_profile.preferences import UserPreferences
+    from user_profile.profile import UserProfile
 
     prefs = UserPreferences(
         work_start="09:00",
@@ -50,7 +53,7 @@ def main() -> None:
     )
 
     # ── Run the pipeline ─────────────────────────────────────────────────────
-    from calcoach.LLM_integration.orchestrator import SchedulingPipeline
+    from LLM_integration.orchestrator import SchedulingPipeline
 
     pipeline = SchedulingPipeline(
         user_profile=profile,
@@ -80,7 +83,7 @@ def main() -> None:
         print()
 
     # Simulate user accepting the top suggestion
-    from calcoach.LLM_integration.reward_handler import FeedbackType
+    from LLM_integration.reward_handler import FeedbackType
     pipeline.record_feedback(
         context_vector=ranked_contexts[0],
         feedback=FeedbackType.ACCEPTED,

@@ -3,11 +3,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from calcoach.user_profile.bandit_state import BanditState
-from calcoach.user_profile.behavioral_stats import BehavioralStats
-from calcoach.user_profile.calibration import CalibrationParams
-from calcoach.user_profile.personality import PersonalityWeights
-from calcoach.user_profile.preferences import UserPreferences
+from user_profile.bandit_state import BanditState
+from user_profile.behavioral_stats import BehavioralStats
+from user_profile.calibration import CalibrationParams
+from user_profile.personality import PersonalityWeights
+from user_profile.preferences import UserPreferences
 
 
 @dataclass

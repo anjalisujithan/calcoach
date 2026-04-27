@@ -5,7 +5,6 @@ Persists reflection data to Google Firestore.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -13,40 +12,15 @@ from dotenv import load_dotenv
 # Repo root `.env`
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
-# ── RL imports (optional — app degrades gracefully if not installed) ──────────
-# Walk upward from this file to find the repo root (identified by RL_exploration/).
-# This works regardless of the directory name or depth Railway deploys into.
-import importlib.util as _importlib_util
-import types as _types
-
-def _find_calcoach_root() -> Path | None:
-    for candidate in Path(__file__).resolve().parents:
-        if (candidate / "RL_exploration").is_dir():
-            return candidate
-    return None
-
-_REPO_ROOT = _find_calcoach_root()
-if _REPO_ROOT is not None and "calcoach" not in sys.modules:
-    _pkg = _types.ModuleType("calcoach")
-    _pkg.__path__ = [str(_REPO_ROOT)]
-    _pkg.__file__ = str(_REPO_ROOT / "__init__.py")
-    _pkg.__package__ = "calcoach"
-    _pkg.__spec__ = _importlib_util.spec_from_file_location(
-        "calcoach",
-        str(_REPO_ROOT / "__init__.py"),
-        submodule_search_locations=[str(_REPO_ROOT)],
-    )
-    sys.modules["calcoach"] = _pkg
-
 try:
     from datetime import time as _time
-    from calcoach.RL_exploration.contextual_bandit import LinUCBBandit
-    from calcoach.RL_exploration.feature_extractor import extract as _extract, FEATURE_NAMES
-    from calcoach.RL_exploration.slot_generator import ScheduleValidator
-    from calcoach.models import Block, CandidateSchedule, TaskRequest, DAY_ORDER
-    from calcoach.user_profile.profile import UserProfile
-    from calcoach.user_profile.preferences import UserPreferences
-    from calcoach.LLM_integration.reward_handler import FeedbackType, compute_reward
+    from RL_exploration.contextual_bandit import LinUCBBandit
+    from RL_exploration.feature_extractor import extract as _extract, FEATURE_NAMES
+    from RL_exploration.slot_generator import ScheduleValidator
+    from models import Block, CandidateSchedule, TaskRequest, DAY_ORDER
+    from user_profile.profile import UserProfile
+    from user_profile.preferences import UserPreferences
+    from LLM_integration.reward_handler import FeedbackType, compute_reward
     _RL_AVAILABLE = True
 except Exception as _rl_import_err:
     _RL_AVAILABLE = False
@@ -349,7 +323,7 @@ async def _load_bandit_state(email: str) -> None:
             if bs_json:
                 bs = json.loads(bs_json)
                 if bs.get("A") and bs.get("b"):
-                    from calcoach.user_profile.bandit_state import BanditState
+                    from user_profile.bandit_state import BanditState
                     _user_profile.bandit_state = BanditState.from_dict(bs)
                     print(f"[RL] Loaded bandit state for {email} (n_updates={_user_profile.bandit_state.n_updates})")
                     return
@@ -478,8 +452,8 @@ async def create_reflection(body: ReflectionIn):
     # data and feed it to the bandit so it can learn timing and length patterns.
     if _RL_AVAILABLE and _user_profile is not None:
         try:
-            from calcoach.LLM_integration.reward_handler import compute_productivity_reward
-            from calcoach.models import Block, CandidateSchedule, TaskRequest
+            from LLM_integration.reward_handler import compute_productivity_reward
+            from models import Block, CandidateSchedule, TaskRequest
             from datetime import datetime as _dt, time as _time_cls
 
             # Map productivity + MCQ → scalar reward
@@ -1947,7 +1921,7 @@ async def _load_attendee_profile(email: str):
         )
         bs_json = data.get("bandit_state_json")
         if bs_json:
-            from calcoach.user_profile.bandit_state import BanditState
+            from user_profile.bandit_state import BanditState
             bs = json.loads(bs_json)
             if bs.get("A") and bs.get("b"):
                 profile.bandit_state = BanditState.from_dict(bs)

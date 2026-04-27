@@ -31,9 +31,9 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-from calcoach.models import CandidateSchedule, TaskRequest
-from calcoach.user_profile import BanditState, UserProfile
-from calcoach.RL_exploration.feature_extractor import CONTEXT_DIM, FEATURE_NAMES, extract
+from models import CandidateSchedule, TaskRequest
+from user_profile import BanditState, UserProfile
+from RL_exploration.feature_extractor import CONTEXT_DIM, FEATURE_NAMES, extract
 
 
 # ---------------------------------------------------------------------------

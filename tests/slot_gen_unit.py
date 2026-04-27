@@ -6,13 +6,17 @@ Unit tests for ScheduleValidator in slot_generator.py.
 The validator's job: given LLM-proposed CandidateSchedules, filter out any
 that violate hard constraints (conflicts, work hours, deadlines, etc.).
 
-Run from the project root (CalCoach/):
-    python -m calcoach.tests.slot_gen_unit
+Run from repo root:
+    python -m tests.slot_gen_unit
 """
 
-from calcoach.user_profile import UserPreferences
-from calcoach.models import Block, CandidateSchedule, TaskRequest
-from calcoach.RL_exploration.slot_generator import ScheduleValidator, _parse_hhmm
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "analytics" / "backend"))
+
+from user_profile import UserPreferences
+from models import Block, CandidateSchedule, TaskRequest
+from RL_exploration.slot_generator import ScheduleValidator, _parse_hhmm
 
 
 # ---------------------------------------------------------------------------

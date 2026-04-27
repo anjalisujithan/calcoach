@@ -23,7 +23,7 @@ from typing import Dict, List, Optional, Tuple
 
 import anthropic
 
-from calcoach.models import Block, CandidateSchedule, DAY_ORDER, TaskRequest
+from models import Block, CandidateSchedule, DAY_ORDER, TaskRequest
 
 
 # ---------------------------------------------------------------------------
