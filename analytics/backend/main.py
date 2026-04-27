@@ -82,6 +82,7 @@ _WEEKDAY_TO_NUM = {
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+import groq
 from groq import AsyncGroq
 from pydantic import BaseModel, Field
 
@@ -2956,6 +2957,18 @@ async def chat(body: ChatMessage):
 
                 if not viable:
                     print(f"[multi-task] no viable slots found for {task_name}")
+            except groq.RateLimitError:
+                _rl_msg = "Rate-Limiting Error Reached. Feed me more credits ;)"
+                return ChatResponse(
+                    reply=_rl_msg,
+                    events_to_create=[],
+                    pending_suggestions=[],
+                    updated_history=history + [
+                        HistoryMessage(role="user", text=body.message),
+                        HistoryMessage(role="assistant", text=_rl_msg),
+                    ],
+                    multi_task=is_multi_task,
+                )
             except Exception as e:
                 import traceback
                 print(f"[multi-task] error scheduling {task_name}: {e}")
@@ -3003,11 +3016,24 @@ async def chat(body: ChatMessage):
         messages.append({"role": h.role if h.role != "system" else "user", "content": h.text})
     messages.append({"role": "user", "content": body.message})
 
-    completion = await client.chat.completions.create(
-        model="meta-llama/llama-4-scout-17b-16e-instruct",
-        messages=messages,
-        response_format={"type": "json_object"},
-    )
+    _RATE_LIMIT_REPLY = "Rate-Limiting Error Reached. Feed me more credits ;)"
+    try:
+        completion = await client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=messages,
+            response_format={"type": "json_object"},
+        )
+    except groq.RateLimitError:
+        return ChatResponse(
+            reply=_RATE_LIMIT_REPLY,
+            events_to_create=[],
+            pending_suggestions=[],
+            updated_history=history + [
+                HistoryMessage(role="user", text=body.message),
+                HistoryMessage(role="assistant", text=_RATE_LIMIT_REPLY),
+            ],
+            multi_task=is_multi_task,
+        )
 
     raw = completion.choices[0].message.content
     # Default user-visible reply if JSON parsing fails entirely. We never want to

@@ -142,8 +142,8 @@ interface Props {
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const COLOR_PALETTE = [
-  '#4285f4', '#ea4335', '#34a853', '#fbbc04',
-  '#9c27b0', '#00acc1', '#e91e63', '#ff6d00',
+  '#FF1493', '#ea4335', '#34a853', '#fbbc04',
+  '#9c27b0', '#00acc1', '#4285f4', '#ff6d00',
   '#607d8b', '#795548',
 ];
 
@@ -181,7 +181,7 @@ const DEFAULT_FORM = {
   day: '1',
   startTime: '09:00',
   endTime: '10:00',
-  color: '#4285f4',
+  color: '#FF1493',
   repeat: 'none',
   customDays: [] as number[],
   repeatEnds: 'never' as 'never' | 'on_date' | 'after',
