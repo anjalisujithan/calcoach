@@ -603,7 +603,10 @@ function SmartFeedbackPanel({ reflections, sessions, userEmail }: { reflections:
         const sesData = await sesRes.json().catch(() => ({}));
         if (cancelled) return;
         if (Array.isArray(refData) && refData.length > 0) setFullReflections(refData);
-        if (Array.isArray(sesData?.sessions) && sesData.sessions.length > 0) setFullSessions(sesData.sessions);
+        if (Array.isArray(sesData?.sessions) && sesData.sessions.length > 0) {
+          const today = new Date().toISOString().slice(0, 10);
+          setFullSessions(sesData.sessions.filter((s: CalSession) => !!s.date && s.date <= today));
+        }
       } catch {
         // fallback to in-memory props
       }
@@ -870,9 +873,13 @@ export default function AnalyticsTab({ reflections, sessions = [], userEmail }: 
     setAllReflections(reflections);
   }, [reflections]);
 
+  // Only include past and present events in analytics (not future scheduled ones)
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const pastSessions = sessions.filter(s => !!s.date && s.date <= todayStr);
+
   const hourData  = byHour(allReflections);
   const dowData   = byDow(allReflections);
-  const subjData  = bySubject(sessions, allReflections);
+  const subjData  = bySubject(pastSessions, allReflections);
   const locData   = byLocation(allReflections);
   const mcqData   = mcqRows(allReflections);
   const underestData = underestimatedSubjects(allReflections);
@@ -890,7 +897,7 @@ export default function AnalyticsTab({ reflections, sessions = [], userEmail }: 
   weekEnd.setDate(weekStart.getDate() + 6);
   weekEnd.setHours(23, 59, 59, 999);
 
-  const thisWeekSessions = sessions.filter(s => {
+  const thisWeekSessions = pastSessions.filter(s => {
     if (!s.date) return false;
     const d = parseISO(s.date);
     return d >= weekStart && d <= weekEnd;
@@ -916,7 +923,7 @@ export default function AnalyticsTab({ reflections, sessions = [], userEmail }: 
   const breaksFitRate   = justRightRate(allReflections, 'breaksFeedback', 'just_right');
   const planAccRate     = justRightRate(allReflections, 'sessionLengthFeedback', 'just_right');
 
-  const empty = allReflections.length === 0 && sessions.length === 0;
+  const empty = allReflections.length === 0 && pastSessions.length === 0;
 
   return (
     <div className="analytics-tab">
@@ -978,7 +985,7 @@ export default function AnalyticsTab({ reflections, sessions = [], userEmail }: 
               </div>
 
               {/* Right: Smart Feedback Panel */}
-              <SmartFeedbackPanel reflections={allReflections} sessions={sessions} userEmail={userEmail} />
+              <SmartFeedbackPanel reflections={allReflections} sessions={pastSessions} userEmail={userEmail} />
             </div>
 
             {/* ── Subject chart full width ── */}
