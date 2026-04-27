@@ -33,6 +33,19 @@ except Exception as _rl_import_err:
     ScheduleValidator = None  # type: ignore[misc, assignment]
     DAY_ORDER = []  # type: ignore[misc, assignment]
     print(f"[RL] Disabled — import failed: {_rl_import_err}")
+    from dataclasses import dataclass, field as _field
+    from typing import List as _List
+
+    @dataclass
+    class UserPreferences:  # type: ignore[no-redef]
+        work_start: str = "09:00"
+        work_end: str = "21:00"
+        sleep_start: str = "23:00"
+        wake_time: str = "08:00"
+        buffer_minutes: int = 10
+        preferred_chunk_minutes: int = 45
+        max_daily_work_minutes: int = 240
+        avoid_days: _List[str] = _field(default_factory=lambda: ["Saturday", "Sunday"])
 
 if _RL_AVAILABLE:
     _bandit = LinUCBBandit(alpha=1.0)
