@@ -41,6 +41,7 @@ const FACE = ['', '😞', '😕', '😐', '🙂', '😄'];
 interface ProdPoint { key: string; label: string; avgProductivity: number; sessionCount: number; }
 interface SubjectPoint { title: string; totalMins: number; sessionCount: number; avgProductivity: number; hasReflection: boolean; }
 interface CalSession { title: string; durationMins: number; date?: string; }
+interface InsightsChatTurn { role: 'user' | 'assistant'; text: string; }
 
 function byHour(reflections: ReflectionEntry[]): ProdPoint[] {
   const g: Record<number, number[]> = {};
@@ -207,6 +208,41 @@ function justRightRate(reflections: ReflectionEntry[], field: keyof ReflectionEn
   const withData = reflections.filter(r => r[field]);
   if (withData.length === 0) return null;
   return withData.filter(r => r[field] === justRightValue).length / withData.length;
+}
+
+function buildInsightsMetrics(reflections: ReflectionEntry[], sessions: CalSession[]) {
+  const hourData = byHour(reflections);
+  const dowData = byDow(reflections);
+  const subjData = bySubject(sessions, reflections);
+  const locData = byLocation(reflections);
+  const avgProd = reflections.length > 0
+    ? reflections.reduce((sum, r) => sum + r.productivity, 0) / reflections.length
+    : 0;
+  const bestHour = hourData.length > 0 ? hourData.reduce((best, x) => x.avgProductivity > best.avgProductivity ? x : best) : null;
+  const bestDow = dowData.length > 0 ? dowData.reduce((best, x) => x.avgProductivity > best.avgProductivity ? x : best) : null;
+  const totalCalendarMinutes = sessions.reduce((sum, s) => sum + (s.durationMins || 0), 0);
+  const totalReflectionMinutes = reflections.reduce((sum, r) => sum + sessionDuration(r), 0);
+
+  return {
+    totalCalendarMinutes,
+    totalReflectionMinutes,
+    reflectionCount: reflections.length,
+    sessionCount: sessions.length,
+    avgProductivity: Number(avgProd.toFixed(2)),
+    bestHour: bestHour ? { label: bestHour.label, avgProductivity: Number(bestHour.avgProductivity.toFixed(2)), count: bestHour.sessionCount } : null,
+    bestWeekday: bestDow ? { label: bestDow.label, avgProductivity: Number(bestDow.avgProductivity.toFixed(2)), count: bestDow.sessionCount } : null,
+    topSubjects: subjData.slice(0, 8).map(s => ({
+      title: s.title,
+      totalMins: s.totalMins,
+      avgProductivity: Number(s.avgProductivity.toFixed(2)),
+      hasReflection: s.hasReflection,
+    })),
+    topLocations: locData.slice(0, 6).map(l => ({
+      location: l.label,
+      avgProductivity: Number(l.avgProductivity.toFixed(2)),
+      count: l.sessionCount,
+    })),
+  };
 }
 
 // ── MCQ charts ────────────────────────────────────────────────────────────────
@@ -520,7 +556,60 @@ function SmartFeedbackPanel({ reflections, sessions, userEmail }: { reflections:
   const [isTyping, setIsTyping] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [chatHistory, setChatHistory] = useState<InsightsChatTurn[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [fullReflections, setFullReflections] = useState<ReflectionEntry[]>(reflections);
+  const [fullSessions, setFullSessions] = useState<CalSession[]>(sessions);
   const hasTriedRef = useRef(false);
+  const chatTypeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function clearChatTypeTimer() {
+    if (chatTypeTimerRef.current) {
+      clearInterval(chatTypeTimerRef.current);
+      chatTypeTimerRef.current = null;
+    }
+  }
+
+  function typeAssistantReply(baseHistory: InsightsChatTurn[], replyText: string) {
+    clearChatTypeTimer();
+    const safeReply = (replyText || '').trim() || 'No response.';
+    setChatHistory([...baseHistory, { role: 'assistant', text: '' }]);
+    let i = 0;
+    chatTypeTimerRef.current = setInterval(() => {
+      i += 1;
+      const next = safeReply.slice(0, i);
+      setChatHistory([...baseHistory, { role: 'assistant', text: next }]);
+      if (i >= safeReply.length) {
+        clearChatTypeTimer();
+      }
+    }, 12);
+  }
+
+  useEffect(() => { setFullReflections(reflections); }, [reflections]);
+  useEffect(() => { setFullSessions(sessions); }, [sessions]);
+  useEffect(() => () => clearChatTypeTimer(), []);
+
+  useEffect(() => {
+    if (!userEmail) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [refRes, sesRes] = await Promise.all([
+          fetch(`${API}/reflections?user_id=${encodeURIComponent(userEmail)}`),
+          fetch(`${API}/sessions?user_id=${encodeURIComponent(userEmail)}`),
+        ]);
+        const refData = await refRes.json().catch(() => []);
+        const sesData = await sesRes.json().catch(() => ({}));
+        if (cancelled) return;
+        if (Array.isArray(refData) && refData.length > 0) setFullReflections(refData);
+        if (Array.isArray(sesData?.sessions) && sesData.sessions.length > 0) setFullSessions(sesData.sessions);
+      } catch {
+        // fallback to in-memory props
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [userEmail]);
 
   // Typewriter effect whenever fullText changes
   useEffect(() => {
@@ -537,7 +626,7 @@ function SmartFeedbackPanel({ reflections, sessions, userEmail }: { reflections:
   }, [fullText]);
 
   async function generate() {
-    if (!reflections.length && !sessions.length) return;
+    if (!fullReflections.length && !fullSessions.length) return;
     setLoading(true);
     setError(null);
     setFullText(null);
@@ -545,7 +634,7 @@ function SmartFeedbackPanel({ reflections, sessions, userEmail }: { reflections:
       const res = await fetch(`${API}/insights`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reflections, sessions, user_email: userEmail }),
+        body: JSON.stringify({ reflections: fullReflections, sessions: fullSessions, user_email: userEmail }),
       });
       if (!res.ok) throw new Error('Server error');
       const data = await res.json();
@@ -558,12 +647,47 @@ function SmartFeedbackPanel({ reflections, sessions, userEmail }: { reflections:
   }
 
   useEffect(() => {
-    if ((reflections.length > 0 || sessions.length > 0) && !hasTriedRef.current) {
+    if ((fullReflections.length > 0 || fullSessions.length > 0) && !hasTriedRef.current) {
       hasTriedRef.current = true;
       generate();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reflections.length, sessions.length]);
+  }, [fullReflections.length, fullSessions.length]);
+
+  async function handleAskInsights() {
+    const q = chatInput.trim();
+    if (!q || chatLoading) return;
+    setChatLoading(true);
+    const nextLocalHistory: InsightsChatTurn[] = [...chatHistory, { role: 'user', text: q }];
+    setChatHistory(nextLocalHistory);
+    setChatInput('');
+    try {
+      const res = await fetch(`${API}/insights/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: q,
+          history: chatHistory,
+          reflections: fullReflections,
+          sessions: fullSessions,
+          metrics: buildInsightsMetrics(fullReflections, fullSessions),
+          user_email: userEmail,
+        }),
+      });
+      if (!res.ok) throw new Error('Insights chat failed');
+      const data = await res.json();
+      const replyText =
+        (Array.isArray(data.updated_history) && data.updated_history.length > 0
+          ? (data.updated_history[data.updated_history.length - 1]?.text ?? '')
+          : (data.reply ?? 'No response.'));
+      typeAssistantReply(nextLocalHistory, replyText);
+    } catch {
+      clearChatTypeTimer();
+      setChatHistory(prev => [...prev, { role: 'assistant', text: 'Could not answer right now. Please try again.' }]);
+    } finally {
+      setChatLoading(false);
+    }
+  }
 
   // Normalize: ensure every bullet marker starts a new line, then split
   const bullets = displayed
@@ -655,6 +779,68 @@ function SmartFeedbackPanel({ reflections, sessions, userEmail }: { reflections:
             })}
           </ul>
         )}
+
+        <div style={{ marginTop: 16, borderTop: '1px solid #f1f3f4', paddingTop: 14 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#3c4043', marginBottom: 8 }}>
+            Ask Smart Insights
+          </div>
+          <div style={{ maxHeight: 180, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 8 }}>
+            {chatHistory.length === 0 && (
+              <div style={{ fontSize: 12, color: '#9aa0a6' }}>
+                Try: "What are my productivity trends by day?" or "Which subject am I underestimating?"
+              </div>
+            )}
+            {chatHistory.map((m, idx) => (
+              <div
+                key={idx}
+                style={{
+                  alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
+                  background: m.role === 'user' ? '#e8f0fe' : '#f8f9fa',
+                  color: '#202124',
+                  borderRadius: 10,
+                  padding: '7px 10px',
+                  fontSize: 12,
+                  lineHeight: 1.45,
+                  maxWidth: '92%',
+                  whiteSpace: 'pre-wrap',
+                }}
+              >
+                {m.text}
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              value={chatInput}
+              onChange={e => setChatInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleAskInsights(); }}
+              placeholder="Ask about your trends, patterns, or metrics..."
+              style={{
+                flex: 1,
+                border: '1px solid #dadce0',
+                borderRadius: 8,
+                padding: '8px 10px',
+                fontSize: 12,
+              }}
+            />
+            <button
+              onClick={handleAskInsights}
+              disabled={chatLoading || !chatInput.trim()}
+              style={{
+                border: 'none',
+                borderRadius: 8,
+                padding: '8px 12px',
+                fontSize: 12,
+                fontWeight: 600,
+                color: '#fff',
+                background: chatLoading || !chatInput.trim() ? '#bcc0c4' : '#1a73e8',
+                cursor: chatLoading || !chatInput.trim() ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {chatLoading ? 'Asking…' : 'Ask'}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -52,7 +52,7 @@ else:
     _user_profile = None
 
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import json
 import os
@@ -73,6 +73,17 @@ _SCHED_INTENT_RE = re.compile(
     r"\b(schedule|add|book|create|set up|block out|find time for)\b",
     re.IGNORECASE,
 )
+_RECURRING_INTENT_RE = re.compile(
+    r"\b(every|weekly|daily|each week|per week|recurring|repeat)\b",
+    re.IGNORECASE,
+)
+_MONTH_TO_NUM = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+}
+_WEEKDAY_TO_NUM = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6,
+}
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -639,6 +650,118 @@ class InsightsRequest(BaseModel):
     user_email: Optional[str] = None  # email — matches the existing email-keyed user doc
 
 
+class InsightsChatTurn(BaseModel):
+    role: str
+    text: str
+
+
+class InsightsChatRequest(BaseModel):
+    message: str
+    history: List[InsightsChatTurn] = []
+    reflections: List[dict] = []
+    sessions: List[dict] = []
+    metrics: dict = {}
+    user_type: Optional[str] = None
+    user_email: Optional[str] = None
+
+
+def _safe_session_minutes(s: dict) -> int:
+    try:
+        return max(0, int(s.get("durationMins", 0)))
+    except Exception:
+        return 0
+
+
+def _compute_insights_metrics(reflections: List[dict], sessions: List[dict]) -> dict:
+    from collections import defaultdict
+    from datetime import date as _date_cls
+
+    total_calendar_mins = sum(_safe_session_minutes(s) for s in sessions)
+    total_reflection_mins = 0
+    productivity_vals: List[float] = []
+
+    by_hour: dict = defaultdict(list)
+    by_dow: dict = defaultdict(list)
+    by_subject: dict = defaultdict(lambda: {"totalMins": 0, "productivity": []})
+
+    for s in sessions:
+        title = (s.get("title") or "Unknown").strip() or "Unknown"
+        by_subject[title]["totalMins"] += _safe_session_minutes(s)
+
+    for r in reflections:
+        title = (r.get("title") or "Unknown").strip() or "Unknown"
+        prod = float(r.get("productivity", 0) or 0)
+        if prod > 0:
+            productivity_vals.append(prod)
+            by_subject[title]["productivity"].append(prod)
+        try:
+            sh, sm = map(int, str(r.get("startTime", "0:0")).split(":"))
+            eh, em = map(int, str(r.get("endTime", "0:0")).split(":"))
+            dur = max(0, eh * 60 + em - sh * 60 - sm)
+        except Exception:
+            dur = 0
+            sh = 0
+        total_reflection_mins += dur
+        by_subject[title]["totalMins"] += dur
+        if prod > 0:
+            by_hour[sh].append(prod)
+        try:
+            dow = _date_cls.fromisoformat(r["date"]).weekday()
+            if prod > 0:
+                by_dow[dow].append(prod)
+        except Exception:
+            pass
+
+    def _avg(vals: List[float]) -> float:
+        return round(sum(vals) / len(vals), 2) if vals else 0.0
+
+    top_subjects = []
+    for title, info in by_subject.items():
+        mins = int(info["totalMins"])
+        if mins <= 0:
+            continue
+        top_subjects.append({
+            "title": title,
+            "totalMins": mins,
+            "avgProductivity": _avg(info["productivity"]),
+            "hasReflection": len(info["productivity"]) > 0,
+        })
+    top_subjects.sort(key=lambda x: x["totalMins"], reverse=True)
+
+    best_hour = None
+    if by_hour:
+        best_h, best_vals = max(by_hour.items(), key=lambda kv: sum(kv[1]) / len(kv[1]))
+        best_hour = {"hour": int(best_h), "avgProductivity": _avg(best_vals), "count": len(best_vals)}
+
+    best_day = None
+    if by_dow:
+        best_d, best_vals = max(by_dow.items(), key=lambda kv: sum(kv[1]) / len(kv[1]))
+        best_day = {"weekday": int(best_d), "avgProductivity": _avg(best_vals), "count": len(best_vals)}
+
+    return {
+        "totalCalendarMinutes": total_calendar_mins,
+        "totalReflectionMinutes": total_reflection_mins,
+        "reflectionCount": len(reflections),
+        "sessionCount": len(sessions),
+        "avgProductivity": _avg(productivity_vals),
+        "bestHour": best_hour,
+        "bestWeekday": best_day,
+        "topSubjects": top_subjects[:10],
+    }
+
+
+async def _load_insights_data_for_user(user_email: str) -> Tuple[List[dict], List[dict]]:
+    email = (user_email or "").strip().lower()
+    if not email:
+        return [], []
+    db = get_db()
+    reflections = [doc.to_dict() async for doc in db.collection(COLLECTION).where("userId", "==", email).stream()]
+    sessions_doc = await db.collection(LOCAL_SESSIONS_COLLECTION).document(email).get()
+    sessions_data = sessions_doc.to_dict() if sessions_doc.exists else {}
+    sessions = sessions_data.get("sessions", []) if isinstance(sessions_data, dict) else []
+    return reflections, sessions if isinstance(sessions, list) else []
+
+
 def _build_insights_prompt(reflections: List[dict], sessions: List[dict], user_type: Optional[str]) -> str:
     from datetime import date as _date_cls
     from collections import defaultdict
@@ -783,6 +906,7 @@ Rules for "feedback" (MUST be a plain string, NOT a JSON array):
 - A single string containing 3 bullet points, each starting with •, separated by newlines
 - Each bullet is an observation the user might not know, e.g. "• You seem to work more productively in the mornings — consider scheduling high-effort tasks before noon."
 - Reference actual subjects, hours, and days from the data
+- When providing a score analysis use a consistent float/float score, e.g. 4.5/5.0, 5.0/5.0 
 - Simple, friendly language; no clichés
 - Under 220 words total
 
@@ -853,6 +977,66 @@ async def get_insights(body: InsightsRequest):
             print(f"[insights] Failed to store ai_summary: {e}")
 
     return {"feedback": feedback, "user_summary": user_summary_text}
+
+
+@app.post("/insights/chat")
+async def insights_chat(body: InsightsChatRequest):
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise HTTPException(500, "GROQ_API_KEY not set")
+
+    message = (body.message or "").strip()
+    if not message:
+        raise HTTPException(400, "message is required")
+
+    reflections = list(body.reflections)
+    sessions = list(body.sessions)
+    if body.user_email:
+        try:
+            db_reflections, db_sessions = await _load_insights_data_for_user(body.user_email)
+            if db_reflections:
+                reflections = db_reflections
+            if db_sessions:
+                sessions = db_sessions
+        except Exception as e:
+            print(f"[insights/chat] failed to load user data: {e}")
+
+    metrics = body.metrics if isinstance(body.metrics, dict) and body.metrics else _compute_insights_metrics(reflections, sessions)
+    base_prompt_full = _build_insights_prompt(reflections, sessions, body.user_type)
+    base_prompt = base_prompt_full.split("Respond with ONLY a JSON object", 1)[0].strip()
+    chat_system = (
+        "You are CalCoach's analytics copilot. Answer user questions about productivity trends using the full context below.\n"
+        "If data is missing, say exactly what is missing. Keep answers concise and actionable.\n"
+        "Use concrete references to subjects, days, and times when possible.\n\n"
+        f"{base_prompt}\n\n"
+        "PRECOMPUTED METRICS (JSON):\n"
+        f"{json.dumps(metrics, indent=2)}\n\n"
+        "When replying, return plain text only (no JSON)."
+    )
+
+    client = AsyncGroq(api_key=api_key)
+    msgs = [{"role": "system", "content": chat_system}]
+    for h in body.history[-12:]:
+        role = "assistant" if h.role == "assistant" else "user"
+        msgs.append({"role": role, "content": h.text})
+    msgs.append({"role": "user", "content": message})
+
+    try:
+        completion = await client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=msgs,
+            temperature=0.4,
+            max_tokens=500,
+        )
+        reply = (completion.choices[0].message.content or "").strip()
+    except Exception as e:
+        raise HTTPException(500, f"insights chat failed: {e}")
+
+    updated_history = body.history + [
+        InsightsChatTurn(role="user", text=message),
+        InsightsChatTurn(role="assistant", text=reply),
+    ]
+    return {"reply": reply, "updated_history": updated_history, "metrics": metrics}
 
 
 # ── Chat models ───────────────────────────────────────────────────────────────
@@ -1036,20 +1220,86 @@ When filling "candidate_slots" (new scheduling request only):
 - Set "reply" to a brief sentence (e.g. "Here are 3 options for your CS homework:")
 - Provide exactly 3 alternative scheduling OPTIONS in "candidate_slots" — different strategies/days for the same task. The server validates against BUSY times: every block must lie entirely inside a FREE window (see follow-up messages if a revision is requested).
 - SINGLE continuous block per option: use top-level fields only: title, description, date (yyyy-MM-dd), startHour (0-23), startMin (0 or 30), durationMins, reasoning (1 sentence)
-- MULTI-BLOCK one option (e.g. 4 hours as four 1-hour sessions): ONE object with the same title/description/reasoning at the top level, plus a "blocks" array. Each block must have: date, startHour, startMin, durationMins (optional title/description override per block). Do NOT split one option into multiple top-level candidate_slots entries.
+- MULTI-BLOCK option format: ONE object with the same title/description/reasoning at the top level, plus a "blocks" array. Each block must have: date, startHour, startMin, durationMins (optional title/description override per block). Do NOT split one option into multiple top-level candidate_slots entries.
+- IMPORTANT CHUNKING GUIDANCE: for larger tasks (roughly >= 3 hours total), strongly prefer splitting EACH of the 3 options into multiple blocks spread across multiple days (for example, 3 blocks per option on different dates when availability allows) instead of a single marathon block.
 - DURATION RULE (hard): for every option, the sum of all blocks' durationMins MUST equal the total time the user asked to schedule. If the user asks for 2 hours, every option must total exactly 120 minutes. This is non-negotiable — never under- or over-schedule.
 - Leave "events_to_create" as an empty array
 
-=== RECURRING EVENTS ===
+=== RECURRING EVENTS (suggest 3 options just like single-event scheduling) ===
 
-When the user asks to add or create a RECURRING event (e.g. "every Tuesday", "weekly gym session", "daily standup"), use "events_to_create" (NOT candidate_slots). Include a "recurrence" field on the event using RRULE format:
-- Weekly on Tuesday: "recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=TU"]
-- Daily: "recurrence": ["RRULE:FREQ=DAILY"]
-- Weekly on Mon, Wed, Fri: "recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR"]
-- If the user says "for N weeks" or "N times", add COUNT: e.g. "RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=8"
-- If the user says "until <date>", add UNTIL: e.g. "RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20261231"
-- If no end is specified, ask the user how long the series should run before creating it.
+When the user asks to create a RECURRING event (e.g. "every Tuesday", "weekly gym
+session", "4x a week"), DO NOT auto-create it. Instead, emit candidate_slots so the
+user can approve or decline — exactly like single-event scheduling.
+
+  - Set "events_to_create" to []
+  - Put exactly 3 alternative time-of-day options for the SAME recurrence in
+    "candidate_slots". Each option is ONE object representing the entire series.
+  - Each option must include a "recurrence" array with exactly ONE RRULE string.
+    The RRULE is identical across the 3 options (same FREQ/BYDAY/UNTIL/COUNT) —
+    only the time-of-day (startHour/startMin) and reasoning differ between options.
+  - "date" on each option is the FIRST occurrence (must be on/after today AND fall
+    on a weekday matched by BYDAY). All 3 options share the same first-occurrence
+    date — only the time differs.
+  - Reasoning should explain WHY this time-of-day works (e.g. "Early morning before
+    classes", "Lunch break run", "Evening when energy is up").
+
+Example shape for a "running practice 4x a week (Mon/Tue/Thu/Fri) until July 26"
+request — note the 3 options share BYDAY/UNTIL but have different startHour:
+
+  [
+    {{ "title": "Running practice", "date": "2026-04-27", "startHour": 7,  "startMin": 0,
+      "durationMins": 60, "recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=MO,TU,TH,FR;UNTIL=20260726"],
+      "reasoning": "Early morning runs build a consistent habit before the day fills up." }},
+    {{ "title": "Running practice", "date": "2026-04-27", "startHour": 12, "startMin": 0,
+      "durationMins": 60, "recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=MO,TU,TH,FR;UNTIL=20260726"],
+      "reasoning": "Midday runs use your lunch break and break up sitting time." }},
+    {{ "title": "Running practice", "date": "2026-04-27", "startHour": 18, "startMin": 0,
+      "durationMins": 60, "recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=MO,TU,TH,FR;UNTIL=20260726"],
+      "reasoning": "Evening runs let you decompress after work." }}
+  ]
+
+REQUIRED fields per option — include ALL of these or emit nothing:
+  - "title" (string)
+  - "description" (string, optional)
+  - "date" (yyyy-MM-dd) — the FIRST occurrence
+  - "startHour" (0-23)
+  - "startMin" (0 or 30)
+  - "durationMins" (integer minutes)
+  - "recurrence" — array containing exactly ONE RRULE string
+  - "reasoning" (1 sentence)
+
+RRULE rules:
+  - Weekly on Tuesday: "RRULE:FREQ=WEEKLY;BYDAY=TU"
+  - Weekly on Mon/Wed/Fri: "RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR"
+  - Daily: "RRULE:FREQ=DAILY"
+  - "for N weeks" / "N occurrences" → embed ";COUNT=N" inside the RRULE
+  - "until <date>" / "before <date>" / "prep for marathon July 26" → embed
+    ";UNTIL=YYYYMMDD" inside the RRULE string (e.g.
+    "RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20260726")
+  - NEVER place COUNT or UNTIL as a sibling field — they live INSIDE the RRULE.
+  - Every recurring series MUST have an end (UNTIL or COUNT). If the user gave none,
+    ASK before emitting any options.
+
+ONE-ENTRY-PER-SERIES RULE (HARD — prevents duplicate events on every weekday):
+  - For a multi-weekday series (e.g. "4x a week, Mon/Tue/Thu/Fri") use a SINGLE
+    candidate_slots option per time-of-day with BYDAY listing all weekdays:
+    "BYDAY=MO,TU,TH,FR". DO NOT emit one option per weekday.
+  - If the user previously asked for the same recurring series in this conversation,
+    do NOT re-suggest it; respond conversationally instead.
+
 BYDAY codes: SU=Sunday, MO=Monday, TU=Tuesday, WE=Wednesday, TH=Thursday, FR=Friday, SA=Saturday
+
+INFORMATION-GATHERING RULE (HARD):
+Before emitting recurring candidate_slots, you MUST have ALL of:
+  • days of the week (BYDAY)
+  • duration (durationMins) — if the user gave a range like "1-2 hours", pick the
+    midpoint and use it for all 3 options
+  • an end (COUNT or UNTIL — derive from the user's stated goal date if possible)
+The 3 candidate_slots options propose the start TIME, so it's OK if the user has
+not specified a time — just generate 3 different time-of-day options.
+If days/duration/end are missing:
+  - Set candidate_slots to [] and events_to_create to []
+  - In "reply", ask ONE friendly clarifying question for the missing piece
 
 When NOT scheduling (questions, advice, follow-up chat, reactions to previous suggestions, general conversation):
 - Set "reply" to your answer
@@ -1082,6 +1332,7 @@ Only proceed with generating candidate_slots if:
 - Provide exactly 3 alternative scheduling OPTIONS in "candidate_slots"
 - SINGLE continuous block per option: title, description, date (yyyy-MM-dd), startHour (0-23), startMin (0 or 30), durationMins, reasoning (1 sentence), deadline_date (yyyy-MM-dd)
 - MULTI-BLOCK option (e.g. 10 hours split into 2-hour sessions): ONE object with title/description/reasoning/deadline_date at top level, plus a "blocks" array. Each block: date, startHour, startMin, durationMins. Do NOT use multiple top-level entries for one option.
+- For larger tasks (roughly >= 3 hours total), prefer multi-block options across multiple days, and make each of the 3 options meaningfully different while preserving the same total required duration.
 
 DEADLINE RULE (hard):
 - deadline_date is always the calendar date the task is due, regardless of time-of-day wording
@@ -1147,8 +1398,479 @@ async def _load_user_ai_summary(user_email: str) -> str:
         return ""
 
 
+async def _load_user_survey(user_email: str) -> Optional[dict]:
+    """Load the user's onboarding survey answers from Firestore. Returns None on miss/error.
+
+    Used by recurring-event recovery to fall back to the user's preferred work_start
+    hour when the LLM-emitted event is missing a startHour.
+    """
+    email = (user_email or "").strip().lower()
+    if not email:
+        return None
+    try:
+        db = get_db()
+        doc = await db.collection(USERS_COLLECTION).document(email).get()
+        if not doc.exists:
+            return None
+        data = doc.to_dict() or {}
+        survey = data.get("survey_answers")
+        return survey if isinstance(survey, dict) else None
+    except Exception as e:
+        print(f"[chat] Failed to load survey for {email}: {e}")
+        return None
+
+
 def _is_scheduling_request(message: str) -> bool:
     return bool(_SCHED_INTENT_RE.search(message or ""))
+
+
+def _is_recurring_request(message: str) -> bool:
+    txt = (message or "").lower()
+    return bool(_RECURRING_INTENT_RE.search(txt))
+
+
+def _conversation_text(message: str, history: Optional[List["HistoryMessage"]] = None) -> str:
+    """Concatenate the recent user/assistant turns + the current message into one string.
+
+    Many heuristics (recurring intent, weekday inference, time-of-day inference) were
+    originally written against the current message only, which loses context across the
+    multi-turn dialogues we actually see in production. This helper gives them the full
+    conversational context.
+    """
+    parts: List[str] = []
+    if history:
+        for h in history[-6:]:
+            try:
+                parts.append(getattr(h, "text", "") or "")
+            except Exception:
+                continue
+    parts.append(message or "")
+    return " \n ".join(p for p in parts if p)
+
+
+def _is_recurring_request_in_context(
+    message: str, history: Optional[List["HistoryMessage"]] = None
+) -> bool:
+    return _is_recurring_request(_conversation_text(message, history))
+
+
+def _infer_weekly_days_from_message(message: str) -> List[int]:
+    txt = (message or "").lower()
+    explicit = [n for name, n in _WEEKDAY_TO_NUM.items() if name in txt]
+    if explicit:
+        return sorted(set(explicit))
+    m = re.search(r"(\d+)\s*(?:x|times?)\s*(?:a|per)?\s*week", txt)
+    if not m:
+        return [0]
+    count = max(1, min(7, int(m.group(1))))
+    presets = {
+        1: [1], 2: [1, 4], 3: [1, 3, 5], 4: [1, 2, 4, 6],
+        5: [0, 1, 2, 3, 4], 6: [0, 1, 2, 3, 4, 6], 7: [0, 1, 2, 3, 4, 5, 6],
+    }
+    return presets.get(count, [0])
+
+
+_UNTIL_INTRO_RE = re.compile(
+    r"(?:until|till|through|before|by|for\s+\w+(?:\s+\w+){0,3})\s+"
+    r"(january|february|march|april|may|june|july|august|september|october|november|december)"
+    r"(?:\s+(\d{1,2}))?",
+    re.IGNORECASE,
+)
+
+
+def _infer_until_yyyymmdd(message: str, now_dt: datetime) -> Optional[str]:
+    """Infer an UNTIL=YYYYMMDD value from natural language.
+
+    Recognises "until <Month> [<day>]", "till <Month> [<day>]", "through <Month> [<day>]",
+    "before <Month> [<day>]", "by <Month> [<day>]", and goal phrases like
+    "prep for marathon July 26" / "for race May 3".
+    """
+    txt = (message or "").lower()
+    m = _UNTIL_INTRO_RE.search(txt)
+    if not m:
+        return None
+    month_num = _MONTH_TO_NUM[m.group(1)]
+    has_day = bool(m.group(2))
+    day = int(m.group(2)) if has_day else 31
+    year = now_dt.year
+    try:
+        tentative = datetime(year=year, month=month_num, day=min(day, 28), tzinfo=now_dt.tzinfo)
+        if tentative.date() < now_dt.date():
+            year += 1
+        if not has_day:
+            import calendar as _cal
+            day = _cal.monthrange(year, month_num)[1]
+        return f"{year:04d}{month_num:02d}{day:02d}"
+    except Exception:
+        return None
+
+
+def _infer_time_and_duration(message: str) -> Tuple[int, int, int]:
+    txt = (message or "").lower()
+    # Duration like "45 min", "1 hour", "1.5 hours"
+    dur = 45
+    m_mins = re.search(r"(\d{1,3})\s*(?:min|mins|minutes)\b", txt)
+    m_hours = re.search(r"(\d+(?:\.\d+)?)\s*(?:hour|hours|hr|hrs)\b", txt)
+    if m_mins:
+        dur = max(15, min(240, int(m_mins.group(1))))
+    elif m_hours:
+        dur = max(15, min(240, int(float(m_hours.group(1)) * 60)))
+
+    # Time like "7am", "7:30 pm"
+    hour = 7
+    minute = 0
+    m_time = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", txt)
+    if m_time:
+        h = int(m_time.group(1)) % 12
+        minute = int(m_time.group(2) or 0)
+        if m_time.group(3) == "pm":
+            h += 12
+        hour = h
+    return hour, minute, dur
+
+
+def _next_date_for_weekday(start_date: datetime, target_weekday: int) -> str:
+    days_ahead = (target_weekday - start_date.weekday()) % 7
+    if days_ahead == 0:
+        days_ahead = 7
+    return (start_date + timedelta(days=days_ahead)).date().isoformat()
+
+
+def _fallback_recurring_event_from_message(message: str) -> Optional[dict]:
+    if not _is_recurring_request(message):
+        return None
+    return _build_recurring_event_from_text(message)
+
+
+def _fallback_recurring_event_from_context(
+    message: str, history: Optional[List["HistoryMessage"]] = None
+) -> Optional[dict]:
+    """History-aware version: if the recurring intent appeared earlier in the dialogue,
+    we can still synthesize a reasonable event even when the latest user message is
+    just a clarification like "mon, tues, thurs, fri"."""
+    txt = _conversation_text(message, history)
+    if not _is_recurring_request(txt):
+        return None
+    return _build_recurring_event_from_text(txt)
+
+
+def _build_recurring_event_from_text(text: str) -> Optional[dict]:
+    now_dt = datetime.now(timezone.utc)
+    txt = (text or "").strip()
+    if not txt:
+        return None
+    title_match = re.search(
+        r"(?:schedule|add|create|book)\s+(?:a\s+|an\s+|some\s+)?(?:recurring\s+)?(.+?)"
+        r"(?:\s+every|\s+weekly|\s+daily|\s+each week|\s+\d+\s*(?:x|times?)|\s+till|\s+until|\s+for|$)",
+        txt,
+        re.IGNORECASE,
+    )
+    title = title_match.group(1).strip().title() if title_match else "Recurring Session"
+    weekdays = _infer_weekly_days_from_message(txt)
+    byday = ",".join(["MO", "TU", "WE", "TH", "FR", "SA", "SU"][d] for d in weekdays)
+    until = _infer_until_yyyymmdd(txt, now_dt)
+    hour, minute, dur = _infer_time_and_duration(txt)
+    start_date = _next_date_for_weekday(now_dt, weekdays[0]) if weekdays else (now_dt + timedelta(days=1)).date().isoformat()
+    rule = f"RRULE:FREQ=WEEKLY;BYDAY={byday}"
+    if until:
+        rule += f";UNTIL={until}"
+    return {
+        "title": title,
+        "description": "Auto-inferred recurring event from your request",
+        "date": start_date,
+        "startHour": hour,
+        "startMin": minute,
+        "durationMins": dur,
+        "recurrence": [rule],
+    }
+
+
+# ── Recurring-event payload normalization & recovery ──────────────────────────
+
+_BYDAY_TO_WEEKDAY = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
+
+
+def _normalize_recurrence_payload(event: dict) -> dict:
+    """Fold stray top-level COUNT / UNTIL / BYDAY / FREQ fields into the RRULE string
+    and drop them so Pydantic's CalendarEvent doesn't choke. Models occasionally emit
+    these as siblings instead of inside the RRULE — accept both shapes."""
+    if not isinstance(event, dict):
+        return event
+    e = dict(event)
+
+    rec = e.get("recurrence")
+    if isinstance(rec, str):
+        rec = [rec]
+    if not isinstance(rec, list):
+        rec = []
+    rule = ""
+    for r in rec:
+        if isinstance(r, str) and r.strip():
+            rule = r.strip()
+            break
+
+    extras: List[Tuple[str, str]] = []
+    for key in ("COUNT", "UNTIL", "FREQ", "BYDAY", "INTERVAL"):
+        if key in e and e[key] not in (None, "", []):
+            val = e.pop(key)
+            extras.append((key, str(val)))
+
+    if extras and not rule:
+        rule = "RRULE:FREQ=WEEKLY"
+    if rule:
+        if not rule.upper().startswith("RRULE:"):
+            rule = "RRULE:" + rule
+        for key, val in extras:
+            if re.search(rf"(^|;){key}=", rule, re.IGNORECASE):
+                continue
+            rule = f"{rule};{key}={val}"
+        e["recurrence"] = [rule]
+    elif rec:
+        e["recurrence"] = rec
+    return e
+
+
+def _first_byday_weekday(rrule: str) -> Optional[int]:
+    m = re.search(r"BYDAY=([A-Z,]+)", rrule or "", re.IGNORECASE)
+    if not m:
+        return None
+    for code in m.group(1).upper().split(","):
+        if code in _BYDAY_TO_WEEKDAY:
+            return _BYDAY_TO_WEEKDAY[code]
+    return None
+
+
+def _has_rrule_end(rrule: str) -> bool:
+    """True if RRULE has either a COUNT or UNTIL clause."""
+    return bool(re.search(r"(^|;)(COUNT|UNTIL)=", rrule or "", re.IGNORECASE))
+
+
+def _recover_recurring_event(
+    event: dict,
+    message: str,
+    history: Optional[List["HistoryMessage"]] = None,
+    user_profile_prefs: Optional[dict] = None,
+) -> Optional[dict]:
+    """Try to fill in missing date/startHour/startMin/durationMins on a partial recurring
+    event so it can be constructed as a CalendarEvent. Returns None if the start time can't
+    be determined — the caller should ask the user instead of inventing one."""
+    if not isinstance(event, dict):
+        return None
+    rec = event.get("recurrence") or []
+    rrule = rec[0] if rec and isinstance(rec[0], str) else ""
+    if not rrule:
+        return None
+
+    ctx_text = _conversation_text(message, history)
+    inferred_hour, inferred_minute, inferred_dur = _infer_time_and_duration(ctx_text)
+    has_explicit_time = bool(re.search(r"\b\d{1,2}(?::\d{2})?\s*(am|pm)\b", ctx_text, re.IGNORECASE))
+
+    out = dict(event)
+
+    if not out.get("date"):
+        weekday = _first_byday_weekday(rrule)
+        if weekday is None:
+            weekdays = _infer_weekly_days_from_message(ctx_text)
+            weekday = weekdays[0] if weekdays else None
+        if weekday is None:
+            return None
+        out["date"] = _next_date_for_weekday(datetime.now(timezone.utc), weekday)
+
+    have_start = "startHour" in out and "startMin" in out and out.get("startHour") is not None
+    if not have_start:
+        if has_explicit_time:
+            out["startHour"] = inferred_hour
+            out["startMin"] = inferred_minute
+        elif user_profile_prefs and isinstance(user_profile_prefs.get("workStartHour"), int):
+            out["startHour"] = int(user_profile_prefs["workStartHour"])
+            out["startMin"] = 0
+        else:
+            return None
+
+    if not out.get("durationMins"):
+        out["durationMins"] = inferred_dur
+
+    if not _has_rrule_end(rrule):
+        until = _infer_until_yyyymmdd(ctx_text, datetime.now(timezone.utc))
+        if until:
+            out["recurrence"] = [f"{rrule};UNTIL={until}"]
+
+    return out
+
+
+def _missing_field_question(event: dict) -> str:
+    """Friendly clarifying question when a recurring event is missing fields."""
+    title = (event.get("title") or "the recurring event").strip()
+    missing: List[str] = []
+    if not event.get("date"):
+        missing.append("which day to start")
+    if event.get("startHour") is None or event.get("startMin") is None:
+        missing.append("what time of day to start (e.g. 7am)")
+    if not event.get("durationMins"):
+        missing.append("how long each session should be")
+    rec = event.get("recurrence") or []
+    rrule = rec[0] if rec else ""
+    if rrule and not _has_rrule_end(rrule):
+        missing.append("when the series should end (a date or number of weeks)")
+    if not missing:
+        missing.append("a few more details")
+    if len(missing) == 1:
+        return f"Got it — for {title}, just need {missing[0]}."
+    if len(missing) == 2:
+        return f"Got it — for {title}, I still need {missing[0]} and {missing[1]}."
+    return f"Got it — for {title}, I still need {', '.join(missing[:-1])}, and {missing[-1]}."
+
+
+# ── Events-to-create dedup ────────────────────────────────────────────────────
+
+_WEEKDAY_TO_BYDAY = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+
+
+def _byday_codes(rrule: str) -> set:
+    """Return the set of BYDAY codes (e.g. {'MO','WE','FR'}) in an RRULE string."""
+    m = re.search(r"BYDAY=([A-Z,]+)", rrule or "", re.IGNORECASE)
+    if not m:
+        return set()
+    return {c.strip().upper() for c in m.group(1).split(",") if c.strip()}
+
+
+def _date_to_byday(date_str: str) -> Optional[str]:
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d")
+        return _WEEKDAY_TO_BYDAY[d.weekday()]
+    except Exception:
+        return None
+
+
+def _events_fingerprint(e: "CalendarEvent") -> Tuple:
+    """Stable identity tuple for deduplication.
+
+    Recurring events fingerprint by (title, normalized RRULE) so the same
+    series emitted multiple times collapses to one entry. Singles fingerprint
+    by (title, '', date, time, duration) so legitimately different sessions
+    are kept distinct.
+    """
+    title = (e.title or "").strip().lower()
+    rec = list(e.recurrence or [])
+    rrule = ""
+    if rec:
+        rrule = re.sub(r"\s+", "", str(rec[0])).upper()
+    if rrule:
+        return (title, rrule, "", 0, 0, 0)
+    return (title, "", e.date, e.startHour, e.startMin, e.durationMins)
+
+
+def _dedupe_events_to_create(events: List["CalendarEvent"]) -> Tuple[List["CalendarEvent"], int]:
+    """Collapse duplicate events emitted by the LLM in a single response.
+
+    Two passes:
+      1. Drop entries that have an identical fingerprint (same recurring series,
+         or identical single occurrence).
+      2. Drop single-occurrence entries that fall on a weekday already covered by
+         a recurring event of the same title + start time + duration.
+
+    Returns (deduped_events, dropped_count).
+    """
+    if not events:
+        return [], 0
+    seen: set = set()
+    first_pass: List[CalendarEvent] = []
+    drops = 0
+    for e in events:
+        fp = _events_fingerprint(e)
+        if fp in seen:
+            drops += 1
+            continue
+        seen.add(fp)
+        first_pass.append(e)
+
+    recurring = [e for e in first_pass if e.recurrence]
+    if not recurring:
+        return first_pass, drops
+
+    out: List[CalendarEvent] = []
+    for e in first_pass:
+        if e.recurrence:
+            out.append(e)
+            continue
+        title_lc = (e.title or "").strip().lower()
+        e_byday = _date_to_byday(e.date)
+        covered = False
+        for r in recurring:
+            if (r.title or "").strip().lower() != title_lc:
+                continue
+            if r.startHour != e.startHour or r.startMin != e.startMin:
+                continue
+            if r.durationMins != e.durationMins:
+                continue
+            r_codes = _byday_codes((r.recurrence or [""])[0])
+            if e_byday and e_byday in r_codes:
+                covered = True
+                break
+        if covered:
+            drops += 1
+        else:
+            out.append(e)
+    return out, drops
+
+
+def _drop_events_already_scheduled(
+    events: List["CalendarEvent"], sessions: List[dict]
+) -> Tuple[List["CalendarEvent"], int]:
+    """Filter out events the user already has on their calendar.
+
+    Two existing-event signals trip the filter:
+      • Same title + same start time + same duration on a date that matches the
+        new event's date OR is covered by the new event's RRULE BYDAY.
+    This stops a re-asked recurring event ("schedule running practice...") from
+    silently piling up a second parallel series.
+    """
+    if not events or not sessions:
+        return events, 0
+    keep: List[CalendarEvent] = []
+    drops = 0
+
+    sessions_by_title: Dict[str, List[dict]] = {}
+    for s in sessions:
+        if not isinstance(s, dict):
+            continue
+        title_lc = (s.get("title") or "").strip().lower()
+        if not title_lc:
+            continue
+        sessions_by_title.setdefault(title_lc, []).append(s)
+
+    for e in events:
+        title_lc = (e.title or "").strip().lower()
+        peers = sessions_by_title.get(title_lc, [])
+        if not peers:
+            keep.append(e)
+            continue
+        rec = (e.recurrence or [""])[0]
+        e_codes = _byday_codes(rec) if rec else set()
+        match = False
+        for s in peers:
+            try:
+                s_hour = int(s.get("startHour", -1))
+                s_min = int(s.get("startMin", -1))
+                s_dur = int(s.get("durationMins", -1))
+            except Exception:
+                continue
+            if s_hour != e.startHour or s_min != e.startMin or s_dur != e.durationMins:
+                continue
+            if e_codes:
+                s_byday = _date_to_byday(str(s.get("date", "")))
+                if s_byday and s_byday in e_codes:
+                    match = True
+                    break
+            else:
+                if str(s.get("date", "")) == e.date:
+                    match = True
+                    break
+        if match:
+            drops += 1
+        else:
+            keep.append(e)
+    return keep, drops
 
 
 def _fetch_attendee_sessions(tokens: dict) -> List[dict]:
@@ -1622,15 +2344,25 @@ def _diagnose_bundles_for_prompt(
 
 def _normalize_scheduling_candidate(raw: dict) -> Optional[dict]:
     """
-    Normalize one LLM candidate into {title, description, reasoning, parts}.
+    Normalize one LLM candidate into {title, description, reasoning, parts, recurrence?}.
     Each part is a dict suitable for CalendarEvent (title, description, date, startHour, startMin, durationMins).
+
+    Recurring options are surfaced through the same channel as single-event scheduling:
+    if the LLM provides a "recurrence" array (or stray COUNT/UNTIL/etc. fields), this
+    function folds them into a single RRULE string and stores it on the bundle so the
+    full series can be created when the user accepts the suggestion.
     """
     if not isinstance(raw, dict):
         return None
+    raw = _normalize_recurrence_payload(dict(raw))  # fold stray COUNT/UNTIL into RRULE
     title = raw.get("title") or "Task"
     description = raw.get("description") or ""
     reasoning = raw.get("reasoning") or ""
     deadline_date: Optional[str] = raw.get("deadline_date") or None
+    recurrence_in = raw.get("recurrence") or []
+    if isinstance(recurrence_in, str):
+        recurrence_in = [recurrence_in]
+    recurrence: List[str] = [str(r).strip() for r in recurrence_in if str(r).strip()]
     parts: List[dict] = []
     blocks = raw.get("blocks")
     if isinstance(blocks, list) and len(blocks) > 0:
@@ -1665,8 +2397,21 @@ def _normalize_scheduling_candidate(raw: dict) -> Optional[dict]:
     # Fallback: if LLM omitted deadline_date, derive it from the latest block date
     if not deadline_date and parts:
         deadline_date = max(p["date"] for p in parts)
-    return {"title": title, "description": description, "reasoning": reasoning,
-            "deadline_date": deadline_date, "parts": parts}
+    bundle = {
+        "title": title,
+        "description": description,
+        "reasoning": reasoning,
+        "deadline_date": deadline_date,
+        "parts": parts,
+    }
+    if recurrence:
+        bundle["recurrence"] = recurrence
+    return bundle
+
+
+def _bundle_is_recurring(bundle: dict) -> bool:
+    rec = bundle.get("recurrence") or []
+    return bool(rec)
 
 
 def _bundle_to_candidate(bundle: dict) -> Optional[CandidateSchedule]:
@@ -1791,13 +2536,115 @@ def _format_slot_label(slot: dict) -> str:
         return f"{slot.get('date')} {slot.get('startHour'):02d}:{slot.get('startMin'):02d}"
 
 
+_BYDAY_LABEL = {
+    "SU": "Sun", "MO": "Mon", "TU": "Tue", "WE": "Wed",
+    "TH": "Thu", "FR": "Fri", "SA": "Sat",
+}
+
+
+def _format_recurring_summary(bundle: dict) -> str:
+    """Human-readable label for a recurring scheduling option.
+
+    Example: "Mon/Tue/Thu/Fri at 7:00 AM (60 min, until Jul 26)".
+    Falls back to the first-occurrence formatting if the RRULE can't be parsed.
+    """
+    parts = bundle.get("parts") or []
+    if not parts:
+        return ""
+    rrule = (bundle.get("recurrence") or [""])[0]
+    first = parts[0]
+    h = int(first.get("startHour", 0))
+    m = int(first.get("startMin", 0))
+    dur = int(first.get("durationMins", 60))
+    ampm = "AM" if h < 12 else "PM"
+    h12 = h % 12 or 12
+    time_str = f"{h12}:{m:02d} {ampm}"
+
+    codes = _byday_codes(rrule)
+    if codes:
+        order = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+        days_part = "/".join(_BYDAY_LABEL[c] for c in order if c in codes)
+    else:
+        # Fall back to first-occurrence weekday for non-BYDAY rules (e.g. FREQ=DAILY).
+        try:
+            d = datetime.strptime(first.get("date", ""), "%Y-%m-%d")
+            days_part = d.strftime("%a")
+        except Exception:
+            days_part = "Recurring"
+
+    suffix_bits: List[str] = [f"{dur} min"]
+    until_match = re.search(r"UNTIL=(\d{8})", rrule or "", re.IGNORECASE)
+    if until_match:
+        try:
+            ud = datetime.strptime(until_match.group(1), "%Y%m%d")
+            suffix_bits.append(f"until {ud.strftime('%b %d')}")
+        except Exception:
+            pass
+    count_match = re.search(r"COUNT=(\d+)", rrule or "", re.IGNORECASE)
+    if count_match:
+        suffix_bits.append(f"{count_match.group(1)} times")
+
+    return f"{days_part} at {time_str} ({', '.join(suffix_bits)})"
+
+
 def _format_bundle_summary(bundle: dict) -> str:
+    if _bundle_is_recurring(bundle):
+        label = _format_recurring_summary(bundle)
+        if label:
+            return label
     parts = bundle.get("parts") or []
     if len(parts) <= 1:
         return _format_slot_label(parts[0]) if parts else ""
     bits = [_format_slot_label(p) for p in parts]
     total_m = sum(int(p.get("durationMins", 0)) for p in parts)
     return f"{len(parts)} blocks, {total_m} min total — " + "; ".join(bits)
+
+
+def _bundle_clashes_with_existing_series(
+    bundle: dict, sessions: List[dict]
+) -> bool:
+    """True if this recurring bundle duplicates an existing series on the calendar.
+
+    We compare title + first-occurrence time + duration. If the existing event
+    falls on a date that matches the new bundle's BYDAY (or the same first date),
+    it's almost certainly the same series.
+    """
+    if not _bundle_is_recurring(bundle):
+        return False
+    parts = bundle.get("parts") or []
+    if not parts:
+        return False
+    title_lc = (bundle.get("title") or "").strip().lower()
+    if not title_lc:
+        return False
+    first = parts[0]
+    h = int(first.get("startHour", 0))
+    m = int(first.get("startMin", 0))
+    dur = int(first.get("durationMins", 60))
+    rec = (bundle.get("recurrence") or [""])[0]
+    codes = _byday_codes(rec)
+
+    for s in sessions or []:
+        if not isinstance(s, dict):
+            continue
+        if (s.get("title") or "").strip().lower() != title_lc:
+            continue
+        try:
+            sh = int(s.get("startHour", -1))
+            sm = int(s.get("startMin", -1))
+            sd = int(s.get("durationMins", -1))
+        except Exception:
+            continue
+        if sh != h or sm != m or sd != dur:
+            continue
+        s_date = str(s.get("date", ""))
+        if codes:
+            s_byday = _date_to_byday(s_date)
+            if s_byday and s_byday in codes:
+                return True
+        elif s_date == first.get("date"):
+            return True
+    return False
 
 
 async def _repair_scheduling_until_viable(
@@ -2177,13 +3024,15 @@ async def chat(body: ChatMessage):
 
     raw = completion.choices[0].message.content
     print(f"[debug] LLM raw output:\n{raw}")
-    reply = raw
+    # Default user-visible reply if JSON parsing fails entirely. We never want to
+    # leak the raw JSON literal into the chat surface.
+    reply = "Sorry, I had trouble parsing that response. Could you re-state the event details?"
     events: List[CalendarEvent] = []
     pending_suggestions: List[RankedSuggestion] = []
 
     try:
         parsed = json.loads(raw)
-        reply = parsed.get("reply", raw)
+        reply = parsed.get("reply", "")
         candidate_slots_raw = parsed.get("candidate_slots", [])
         events_raw = parsed.get("events_to_create", [])
 
@@ -2195,8 +3044,31 @@ async def chat(body: ChatMessage):
                     if nb:
                         bundles_in.append(nb)
 
+            recurring_bundles_in = [b for b in bundles_in if _bundle_is_recurring(b)]
+            single_bundles_in = [b for b in bundles_in if not _bundle_is_recurring(b)]
+            is_recurring_request = bool(recurring_bundles_in) and not single_bundles_in
+
             ranked_bundles: List[dict] = []
-            if bundles_in and _RL_AVAILABLE and ScheduleValidator is not None:
+            if is_recurring_request:
+                # Recurring options bypass the per-week ScheduleValidator/repair loop
+                # (RRULE expansion against busy windows is intractable here). We do a
+                # lightweight clash check on the FIRST occurrence and drop any series
+                # the user already has on their calendar so re-asks don't pile up
+                # parallel series.
+                ranked_bundles = list(recurring_bundles_in)[:n_suggestions_target]
+                _date_busy = _sessions_to_date_busy(combined_sessions)
+                ranked_bundles = [
+                    b for b in ranked_bundles
+                    if not _bundle_clashes_with_sessions(b, _date_busy)[0]
+                ]
+                pre_existing = len(ranked_bundles)
+                ranked_bundles = [
+                    b for b in ranked_bundles
+                    if not _bundle_clashes_with_existing_series(b, combined_sessions)
+                ]
+                if len(ranked_bundles) < pre_existing:
+                    print(f"[chat] Filtered {pre_existing - len(ranked_bundles)} recurring option(s) already on calendar")
+            elif bundles_in and _RL_AVAILABLE and ScheduleValidator is not None:
                 try:
                     viable, reply, _ = await _repair_scheduling_until_viable(
                         client, messages, combined_sessions, bundles_in, raw, parsed,
@@ -2229,15 +3101,17 @@ async def chat(body: ChatMessage):
                 ranked_bundles = _rank_slots(bundles_in, requester_sessions) if bundles_in else []
                 ranked_bundles = ranked_bundles[:n_suggestions_target]
 
-            # Final clash filter against both users' events
-            _date_busy = _sessions_to_date_busy(combined_sessions)
-            pre_filter_count = len(ranked_bundles)
-            ranked_bundles = [
-                b for b in ranked_bundles
-                if not _bundle_clashes_with_sessions(b, _date_busy)[0]
-            ]
-            if len(ranked_bundles) < pre_filter_count:
-                print(f"[chat] Final clash filter removed {pre_filter_count - len(ranked_bundles)} clashing bundle(s)")
+            if not is_recurring_request:
+                # Final clash filter against both users' events (recurring bundles
+                # already filtered above; single-event bundles still need this).
+                _date_busy = _sessions_to_date_busy(combined_sessions)
+                pre_filter_count = len(ranked_bundles)
+                ranked_bundles = [
+                    b for b in ranked_bundles
+                    if not _bundle_clashes_with_sessions(b, _date_busy)[0]
+                ]
+                if len(ranked_bundles) < pre_filter_count:
+                    print(f"[chat] Final clash filter removed {pre_filter_count - len(ranked_bundles)} clashing bundle(s)")
 
             global _last_candidate_slots
             _last_candidate_slots = ranked_bundles
@@ -2246,6 +3120,7 @@ async def chat(body: ChatMessage):
             for i, bundle in enumerate(ranked_bundles):
                 reasoning = bundle.get("reasoning", "")
                 parts = bundle.get("parts") or []
+                bundle_recurrence: List[str] = list(bundle.get("recurrence") or [])
                 cal_events: List[CalendarEvent] = []
                 for p in parts:
                     try:
@@ -2257,6 +3132,7 @@ async def chat(body: ChatMessage):
                                 startHour=int(p.get("startHour", 0)),
                                 startMin=int(p.get("startMin", 0)),
                                 durationMins=int(p.get("durationMins", 60)),
+                                recurrence=bundle_recurrence,
                             )
                         )
                     except Exception:
@@ -2278,25 +3154,117 @@ async def chat(body: ChatMessage):
                 reply_lines.append("")
 
             if pending_suggestions:
-                reply_lines.append(
-                    "Options are shown on your calendar. Use ✓ on the highlighted suggestion to add all its blocks, or ✗ to dismiss."
-                )
+                if is_recurring_request:
+                    reply_lines.append(
+                        "Recurring options are previewed on your calendar. Use ✓ to schedule the whole series, or ✗ to dismiss."
+                    )
+                else:
+                    reply_lines.append(
+                        "Options are shown on your calendar. Use ✓ on the highlighted suggestion to add all its blocks, or ✗ to dismiss."
+                    )
                 reply = "\n".join(reply_lines)
-                if attendee_email and requester_email and ranked_bundles:
+                if attendee_email and requester_email and ranked_bundles and not is_recurring_request:
                     await _create_and_send_shared_invite(
                         requester_email=requester_email,
                         attendee_email=attendee_email,
                         bundle=ranked_bundles[0],
                     )
+            elif is_recurring_request and recurring_bundles_in and not ranked_bundles:
+                # All recurring options were filtered out (already on calendar /
+                # clashed). Surface that to the user instead of an empty reply.
+                reply = (
+                    "Looks like that recurring series is already on your calendar, "
+                    "so I won't suggest it again. Want me to change the time, days, "
+                    "or end date?"
+                )
         else:
-            # No scheduling — use events_to_create directly (backwards compat)
-            events = [CalendarEvent(**e) for e in events_raw if isinstance(e, dict)]
+            # No scheduling — use events_to_create directly (backwards compat).
+            # Parse each event individually so one malformed entry doesn't kill the batch,
+            # and try to recover partial recurring events (missing date/start time) from
+            # the conversation context before giving up.
+            survey_prefs: Optional[dict] = None
+            if requester_email:
+                try:
+                    survey_prefs = await _load_user_survey(requester_email)
+                except Exception:
+                    survey_prefs = None
+
+            clarifying_question: Optional[str] = None
+            had_recurring_payload = False
+            for raw_event in events_raw:
+                if not isinstance(raw_event, dict):
+                    continue
+                normalized = _normalize_recurrence_payload(raw_event)
+                rec = normalized.get("recurrence") or []
+                if rec:
+                    had_recurring_payload = True
+                try:
+                    events.append(CalendarEvent(**normalized))
+                    continue
+                except Exception as parse_err:
+                    print(f"[chat] CalendarEvent parse failed, attempting recovery: {parse_err}")
+
+                if rec:
+                    recovered = _recover_recurring_event(
+                        normalized, body.message, history, survey_prefs
+                    )
+                    if recovered:
+                        try:
+                            events.append(CalendarEvent(**recovered))
+                            continue
+                        except Exception as rebuild_err:
+                            print(f"[chat] Recovered recurring event still invalid: {rebuild_err}")
+                    if clarifying_question is None:
+                        clarifying_question = _missing_field_question(normalized)
+
+            # If model didn't emit events_to_create at all but the conversation clearly
+            # asked for a recurring event, synthesize one from the dialogue.
+            if not events and not had_recurring_payload and _is_recurring_request_in_context(
+                body.message, history
+            ):
+                inferred = _fallback_recurring_event_from_context(body.message, history)
+                if inferred:
+                    try:
+                        events = [CalendarEvent(**inferred)]
+                        if "Here are" in reply or "option" in (reply or "").lower():
+                            reply = "I went ahead and created a recurring event from your request. You can edit the exact days/time from the event modal if needed."
+                    except Exception:
+                        pass
+
+            # If we recognised a recurring intent but couldn't build a valid event,
+            # ask the user for the missing field instead of silently dropping it.
+            if not events and clarifying_question:
+                reply = clarifying_question
+
+            # Collapse duplicates emitted in the same response (e.g. one
+            # events_to_create entry per weekday, all with the same RRULE).
+            if events:
+                events, dup_drops = _dedupe_events_to_create(events)
+                if dup_drops:
+                    print(f"[chat] events_to_create dedupe removed {dup_drops} duplicate entries")
+
+            # Drop entries the user already has on their calendar so re-asking
+            # doesn't pile up a second parallel series.
+            already_drops = 0
+            if events:
+                events, already_drops = _drop_events_already_scheduled(events, combined_sessions)
+                if already_drops:
+                    print(f"[chat] events_to_create skipped {already_drops} entry already on calendar")
+
+            if already_drops and not events:
+                reply = (
+                    "Looks like you already have that on your calendar at the same time, "
+                    "so I won't add a duplicate. Let me know if you want to change the time or end date."
+                )
+
+            if not reply:
+                reply = "Got it."
 
     except Exception as e:
         import traceback
         print(f"[chat] JSON parse error: {e}")
         traceback.print_exc()
-        reply = raw
+        reply = "Sorry, I had trouble parsing that response. Could you re-state the event details?"
 
     updated_history = history + [
         HistoryMessage(role="user", text=body.message),
